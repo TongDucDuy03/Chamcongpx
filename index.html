@@ -146,6 +146,9 @@
             <button type="button" id="btnWorkerSubTabForm" class="worker-subtab-btn active">
               Báo tăng ca
             </button>
+            <button type="button" id="btnWorkerSubTabCalendar" class="worker-subtab-btn">
+              Bảng công
+            </button>
             <button type="button" id="btnWorkerSubTabHistory" class="worker-subtab-btn">
               <span>Lịch sử đã gửi</span>
               <span id="workerHistoryTabCount" class="worker-subtab-count">0</span>
@@ -389,6 +392,34 @@
         <!-- ==================================================================
              TAB 2: LỊCH SỬ TĂNG CA CÁ NHÂN (CHO PHÉP CÔNG NHÂN SỬA / XÓA)
              ================================================================== -->
+        <div id="workerSubViewCalendar" class="worker-subview" style="display: none;">
+          <div class="mobile-form-card">
+            <div class="cal-nav">
+              <button type="button" id="btnCalPrev" class="cal-nav-btn" aria-label="Tháng trước">&lsaquo;</button>
+              <div id="calMonthTitle" class="cal-month-title">Tháng 10/2026</div>
+              <button type="button" id="btnCalNext" class="cal-nav-btn" aria-label="Tháng sau">&rsaquo;</button>
+            </div>
+            <div class="cal-summary">
+              <div><strong id="calSumOtDays">0</strong><span>ngày có tăng ca</span></div>
+              <div><strong id="calSumHours">0</strong><span>tổng giờ tăng ca</span></div>
+              <div><strong id="calSumWorkDays">0</strong><span>ngày công (X)</span></div>
+            </div>
+            <div class="cal-weekdays">
+              <span>T2</span><span>T3</span><span>T4</span><span>T5</span><span>T6</span><span>T7</span><span>CN</span>
+            </div>
+            <div id="calGrid" class="cal-grid"></div>
+            <div class="cal-legend">
+              <span><i class="cal-dot ot"></i>Có tăng ca</span>
+              <span><i class="cal-dot locked"></i>Đã chốt công</span>
+              <span><i class="cal-dot warn"></i>Sửa sau chốt</span>
+            </div>
+            <div class="sub-meta-text" style="margin-top: 0.5rem;">X = 1 công làm giờ hành chính. X+4 = 1 công + 4 giờ tăng ca. Bấm vào một ngày để xem hoặc sửa.</div>
+            <div id="calDayDetail" class="cal-day-detail" style="display: none;"></div>
+            <div class="cal-list-title">Chi tiết cả tháng</div>
+            <div id="calList" class="cal-list"></div>
+          </div>
+        </div>
+
         <div id="workerSubViewHistory" class="worker-subview" style="display: none;">
           <div class="mobile-form-card">
             <div class="history-card-header">

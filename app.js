@@ -449,7 +449,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Trạng thái thiết bị điện thoại công nhân
     selectedEmployeeName: 'Tống Đức Duy',
-    workerMobileSubTab: 'FORM', // 'FORM' | 'HISTORY'
+    workerMobileSubTab: 'FORM', // 'FORM' | 'CALENDAR' | 'HISTORY'
+    calMonth: '',
+    calSelectedIso: '',
     mobileWorkerPickerOpen: false,
     mobileEntryMode: 'STANDARD',
     mobileWorkMode: 'Tăng ca tại công ty',
@@ -2582,11 +2584,18 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const subViewForm = document.getElementById('workerSubViewForm');
     const subViewHistory = document.getElementById('workerSubViewHistory');
 
-    const isHistoryTab = state.workerMobileSubTab === 'HISTORY';
-    if (tabBtnForm) tabBtnForm.classList.toggle('active', !isHistoryTab);
+    const subTab = state.workerMobileSubTab;
+    const isHistoryTab = subTab === 'HISTORY';
+    const isCalTab = subTab === 'CALENDAR';
+    const tabBtnCal = document.getElementById('btnWorkerSubTabCalendar');
+    const subViewCal = document.getElementById('workerSubViewCalendar');
+    if (tabBtnForm) tabBtnForm.classList.toggle('active', !isHistoryTab && !isCalTab);
+    if (tabBtnCal) tabBtnCal.classList.toggle('active', isCalTab);
     if (tabBtnHistory) tabBtnHistory.classList.toggle('active', isHistoryTab);
-    if (subViewForm) subViewForm.style.display = isHistoryTab ? 'none' : 'block';
+    if (subViewForm) subViewForm.style.display = !isHistoryTab && !isCalTab ? 'block' : 'none';
+    if (subViewCal) subViewCal.style.display = isCalTab ? 'block' : 'none';
     if (subViewHistory) subViewHistory.style.display = isHistoryTab ? 'block' : 'none';
+    if (isCalTab) renderWorkerCalendar();
 
     // Tính toán các ca Sáng / Trưa / Tối đang chọn
     const daily = computeCurrentMobileDailySlots();
@@ -2849,6 +2858,124 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
    * Xử lý khi Công nhân bấm nút "Lưu báo tăng ca ngày..."
    * Hỗ trợ lưu cùng lúc cả 3 ca (Sáng + Trưa + Tối) chỉ với 1 lần bấm, hoặc cập nhật lại ngày đã báo!
    */
+  // ==========================================================================
+  // BẢNG CÔNG THÁNG CỦA CÔNG NHÂN (X, X+1, X+4... theo từng ngày)
+  // ==========================================================================
+
+  function localIsoToday() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  function renderWorkerCalendar() {
+    const empName = state.loggedInEmployeeName || state.selectedEmployeeName;
+    const grid = document.getElementById('calGrid');
+    if (!grid || !empName) return;
+
+    const todayIso = localIsoToday();
+    if (!/^\d{4}-\d{2}$/.test(state.calMonth || '')) state.calMonth = todayIso.slice(0, 7);
+    const [year, month] = state.calMonth.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const firstDow = (new Date(year, month - 1, 1).getDay() + 6) % 7; // Thứ 2 = 0
+
+    const titleEl = document.getElementById('calMonthTitle');
+    if (titleEl) titleEl.textContent = `Tháng ${pad2(month)}/${year}`;
+
+    let otDays = 0;
+    let totalHours = 0;
+    let workDays = 0;
+    let cells = '';
+    let listRows = '';
+    const dowNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+
+    for (let i = 0; i < firstDow; i++) cells += '<div class="cal-cell empty"></div>';
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const iso = `${year}-${pad2(month)}-${pad2(day)}`;
+      const vn = isoDateToVnDate(iso);
+      const dow = new Date(year, month - 1, day).getDay();
+      const isSunday = dow === 0;
+      const isFuture = iso > todayIso;
+      const sum = getEmployeeDaySummary(empName, vn);
+      const hasOt = sum.totalHours > 0;
+      const lockInfo = state.lockedDays[vn];
+      const isLocked = Boolean(lockInfo && lockInfo.locked);
+      const hasWarn = Boolean(
+        state.dayModAlerts &&
+          Object.keys(state.dayModAlerts).some((k) => k.includes(vn) && k.includes(empName))
+      );
+
+      let code = '';
+      if (hasOt) {
+        code = sum.code;
+        otDays += 1;
+        totalHours += sum.totalHours;
+        workDays += 1;
+      } else if (!isFuture && !isSunday) {
+        code = 'X';
+        workDays += 1;
+      } else if (isSunday && !isFuture) {
+        code = 'CN';
+      }
+
+      const cls = ['cal-cell'];
+      if (hasOt) cls.push('has-ot');
+      if (isSunday) cls.push('sunday');
+      if (isFuture) cls.push('future');
+      if (iso === todayIso) cls.push('today');
+      if (iso === state.calSelectedIso) cls.push('selected');
+      if (isLocked) cls.push('locked');
+      if (hasWarn) cls.push('warn');
+
+      cells += `<button type="button" class="${cls.join(' ')}" data-iso="${iso}"><span class="cal-day-num">${day}</span><span class="cal-code">${escapeHtml(code)}</span></button>`;
+
+      if (hasOt || (!isFuture && !isSunday)) {
+        listRows += `<div class="cal-list-row${hasOt ? ' has-ot' : ''}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${hasOt ? escapeHtml(sum.detailStr) : 'Không tăng ca'}</span></div>`;
+      }
+    }
+
+    grid.innerHTML = cells;
+    const listEl = document.getElementById('calList');
+    if (listEl) listEl.innerHTML = listRows || '<div class="sub-meta-text">Chưa có dữ liệu trong tháng này.</div>';
+
+    const setText = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    setText('calSumOtDays', String(otDays));
+    setText('calSumHours', formatHoursClean(Math.round(totalHours * 100) / 100));
+    setText('calSumWorkDays', String(workDays));
+
+    const detail = document.getElementById('calDayDetail');
+    if (detail) {
+      if (state.calSelectedIso && state.calSelectedIso.startsWith(state.calMonth)) {
+        const vn = isoDateToVnDate(state.calSelectedIso);
+        const sum = getEmployeeDaySummary(empName, vn);
+        const locked = Boolean(state.lockedDays[vn] && state.lockedDays[vn].locked);
+        detail.style.display = 'block';
+        detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}: ${escapeHtml(sum.code || 'X')}</strong></div>
+          <div class="sub-meta-text">${sum.totalHours > 0 ? escapeHtml(sum.detailStr) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
+          <button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;">${sum.totalHours > 0 ? 'Sửa ngày này' : 'Báo tăng ca ngày này'}</button>`;
+      } else {
+        detail.style.display = 'none';
+      }
+    }
+  }
+
+  function selectCalendarDay(iso) {
+    state.calSelectedIso = iso;
+    renderWorkerCalendar();
+    document.getElementById('calDayDetail')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function shiftCalendarMonth(delta) {
+    const [y, m] = (state.calMonth || localIsoToday().slice(0, 7)).split('-').map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    state.calMonth = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+    state.calSelectedIso = '';
+    renderWorkerCalendar();
+  }
+
   async function handleWorkerMobileSubmit() {
     if (state.authRole !== 'WORKER' && state.authRole !== 'ADMIN') {
       showToast('Vui lòng đăng nhập tài khoản trước khi gửi báo tăng ca!', 'warn');
@@ -4266,6 +4393,27 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     document.getElementById('btnWorkerSubTabHistory')?.addEventListener('click', () => {
       state.workerMobileSubTab = 'HISTORY';
       renderWorkerMobileView();
+    });
+
+    document.getElementById('btnWorkerSubTabCalendar')?.addEventListener('click', () => {
+      state.workerMobileSubTab = 'CALENDAR';
+      renderWorkerMobileView();
+    });
+    document.getElementById('btnCalPrev')?.addEventListener('click', () => shiftCalendarMonth(-1));
+    document.getElementById('btnCalNext')?.addEventListener('click', () => shiftCalendarMonth(1));
+    document.getElementById('workerSubViewCalendar')?.addEventListener('click', (ev) => {
+      if (ev.target.closest('#btnCalEditDay')) {
+        const empName = state.loggedInEmployeeName || state.selectedEmployeeName;
+        state.workerMobileSubTab = 'FORM';
+        loadExistingDayIntoMobileForm(empName, state.calSelectedIso, true);
+        renderWorkerMobileView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      const cell = ev.target.closest('[data-iso]');
+      if (cell && !cell.classList.contains('empty')) {
+        selectCalendarDay(cell.getAttribute('data-iso'));
+      }
     });
 
     document.getElementById('btnViewHistoryAfterAck')?.addEventListener('click', () => {
