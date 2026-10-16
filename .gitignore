@@ -1,0 +1,21 @@
+# Chống treo đồng bộ OneDrive & chặn thư viện nặng trong thư mục sản phẩm (san_pham)
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.cache/
+dist/
+build/
+
+# File tạm của Excel / Windows
+~$*.xlsx
+~$*.xls
+*.tmp
+*.temp
+*.log
+Thumbs.db
+.DS_Store
+
+# Dữ liệu thật (tên, mật khẩu nhân viên) - không đưa lên GitHub
+data/overtime_db.json
