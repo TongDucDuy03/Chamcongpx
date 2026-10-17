@@ -454,6 +454,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     workerMobileSubTab: 'FORM', // 'FORM' | 'CALENDAR' | 'HISTORY'
     calMonth: '',
     calSelectedIso: '',
+    formReturnTab: null, // tab quay về khi bấm Quay lại (CALENDAR | HISTORY)
+    editingIso: '',
     mobileWorkerPickerOpen: false,
     mobileEntryMode: 'STANDARD',
     mobileWorkMode: 'Tăng ca tại công ty',
@@ -2344,6 +2346,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       syncWorkerDefaultsFromSelectedEmp();
       saveLocalState(false);
       saveAuthSession();
+      resetWorkerForm();
       state.activeMainTab = 'WORKER_MOBILE';
       playFeedbackSound('SUCCESS');
       renderAll();
@@ -2852,7 +2855,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         btnSubmitText.textContent =
           daily.totalHours > 0
             ? `Cập nhật ngày ${daily.workDate} (${daily.codeLabel} • ${formatHoursClean(daily.totalHours)} giờ)`
-            : `Xóa tăng ca ngày ${daily.workDate} (Về X)`;
+            : `Lưu: bỏ hết tăng ca ngày ${daily.workDate}`;
       } else {
         btnSubmitText.textContent =
           daily.totalHours > 0
@@ -2861,8 +2864,165 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       }
     }
 
+    // Thanh "Đang sửa ngày..." có nút Quay lại
+    const editBar = document.getElementById('editModeBar');
+    if (editBar) {
+      if (state.formReturnTab) {
+        editBar.style.display = 'flex';
+        const t = document.getElementById('editModeTitle');
+        if (t) t.textContent = `${existingSummary.records.length > 0 ? 'Đang sửa' : 'Báo tăng ca'} ngày ${daily.workDate}`;
+      } else {
+        editBar.style.display = 'none';
+      }
+    }
+    const delBtn = document.getElementById('btnDeleteDayFromForm');
+    if (delBtn) delBtn.style.display = existingSummary.records.length > 0 ? 'block' : 'none';
+
+    // Nút Lưu: khóa khi chưa chọn gì để tránh bấm nhầm
+    const submitBtn = document.getElementById('btnSubmitMobileOvertime');
+    if (submitBtn && !state.isWaitingServerAck) {
+      const nothingChosen = daily.checkedSlots.length === 0 && existingSummary.records.length === 0;
+      submitBtn.disabled = nothingChosen;
+      if (nothingChosen && btnSubmitText) {
+        btnSubmitText.textContent = daily.isRestDay
+          ? 'Nếu có đi làm, tích "Tôi có đi làm ngày này"'
+          : 'Chọn ca làm ở trên rồi bấm Lưu';
+      }
+    }
+
     // Render lịch sử cá nhân của đúng công nhân đang đăng nhập
     renderWorkerPersonalHistory(emp.name);
+  }
+
+  // ==========================================================================
+  // THAO TÁC FORM CÔNG NHÂN: MẶC ĐỊNH, SỬA/QUAY LẠI, XÓA NGÀY
+  // ==========================================================================
+
+  function currentWorkerName() {
+    return state.authRole === 'WORKER' && state.loggedInEmployeeName
+      ? state.loggedInEmployeeName
+      : state.selectedEmployeeName;
+  }
+
+  function lastJobKey(empName) {
+    return `SMART_FACTORY_LAST_JOB::${empName}`;
+  }
+
+  function syncJobChipsToInput() {
+    const val = (document.getElementById('mobileJobContent')?.value || '').trim();
+    document.querySelectorAll('#mobileJobChips .job-chip-btn').forEach((b) => {
+      b.classList.toggle('active', (b.getAttribute('data-job') || '') === val);
+    });
+  }
+
+  /**
+   * Đưa form về trạng thái sạch: ngày hôm nay, chưa tích ca nào (tránh gửi nhầm),
+   * nội dung công việc điền sẵn theo lần báo gần nhất của chính người đó.
+   */
+  function resetWorkerForm() {
+    const setVal = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.value = v;
+    };
+    const setChk = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.checked = v;
+    };
+    const today = localIsoToday();
+    const dateEl = document.getElementById('mobileWorkDate');
+    if (dateEl) {
+      dateEl.value = today;
+      dateEl.max = today;
+    }
+    ['slotMorningCheck', 'slotLunchCheck', 'slotEveningCheck', 'slotEveningOvernight', 'restWorkCheck'].forEach((id) =>
+      setChk(id, false)
+    );
+    setVal('slotMorningStart', '06:15');
+    setVal('slotMorningEnd', '07:15');
+    setVal('slotLunchStart', '11:15');
+    setVal('slotLunchEnd', '13:15');
+    setVal('slotEveningStart', '17:15');
+    setVal('slotEveningEnd', '18:15');
+    setVal('restStart', '07:15');
+    setVal('restEnd', '15:15');
+    document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
+
+    let lastJob = '';
+    try {
+      lastJob = localStorage.getItem(lastJobKey(currentWorkerName())) || '';
+    } catch (_) {}
+    setVal('mobileJobContent', lastJob);
+    setVal('mobileNoteInput', '');
+    syncJobChipsToInput();
+
+    state.formReturnTab = null;
+    state.editingIso = '';
+  }
+
+  function clearEditHistoryFlag() {
+    try {
+      if (window.history.state && window.history.state.otEdit) {
+        window.history.replaceState({}, '');
+      }
+    } catch (_) {}
+  }
+
+  /** Mở form cho 1 ngày cụ thể (từ Bảng công hoặc Lịch sử). returnTab = tab sẽ quay về khi bấm Quay lại */
+  function openFormForDay(iso, returnTab) {
+    const empName = currentWorkerName();
+    resetWorkerForm();
+    state.formReturnTab = returnTab;
+    state.editingIso = iso;
+    state.workerMobileSubTab = 'FORM';
+    state.lastServerAckReceipt = null;
+    const dateEl = document.getElementById('mobileWorkDate');
+    if (dateEl) dateEl.value = iso;
+    try {
+      window.history.pushState({ otEdit: 1 }, '');
+    } catch (_) {}
+    loadExistingDayIntoMobileForm(empName, iso, false);
+    renderAll();
+    window.scrollTo({ top: 0 });
+  }
+
+  function leaveEditMode(targetTab) {
+    const hadEdit = Boolean(state.formReturnTab);
+    const ret = targetTab || state.formReturnTab || 'FORM';
+    if (hadEdit) {
+      clearEditHistoryFlag();
+      resetWorkerForm();
+    }
+    state.workerMobileSubTab = ret;
+    renderAll();
+    window.scrollTo({ top: 0 });
+  }
+
+  function cancelEditMode() {
+    // Nếu đã đẩy 1 mục lịch sử khi mở form thì lùi lại 1 bước để nút Back của điện thoại cũng khớp
+    try {
+      if (window.history.state && window.history.state.otEdit) {
+        window.history.back();
+        return;
+      }
+    } catch (_) {}
+    leaveEditMode();
+  }
+
+  async function deleteWorkerDay(empName, vnDate) {
+    const beforeSummary = getEmployeeDaySummary(empName, vnDate);
+    if (beforeSummary.records.length === 0) return false;
+    const locked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
+    const msg = locked
+      ? `Ngày ${vnDate} đã được Quản đốc chốt công. Xóa thì ô công của bạn sẽ bị bôi vàng để Quản đốc kiểm tra lại.\n\nBạn chắc chắn muốn xóa báo tăng ca ngày này?`
+      : `Xóa toàn bộ báo tăng ca ngày ${vnDate} (${beforeSummary.codeLabel})?`;
+    if (!window.confirm(msg)) return false;
+    state.records = state.records.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
+    state.offlineQueue = state.offlineQueue.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
+    if (locked) checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
+    saveLocalState(true);
+    await syncWithCentralServer(true);
+    showToast(`Đã xóa báo tăng ca ngày <strong>${escapeHtml(vnDate)}</strong>.`, 'success');
+    return true;
   }
 
   function renderWorkerPersonalHistory(empName) {
@@ -2890,7 +3050,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     if (myRecords.length === 0) {
       listEl.innerHTML = `
         <div style="text-align: center; padding: 1.75rem 1rem; color: var(--text-secondary); font-size: 0.85rem;">
-          Bạn chưa có phiếu tăng ca nào trong tháng này.
+          Bạn chưa báo ca tăng ca nào.
         </div>
       `;
       return;
@@ -2988,9 +3148,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       btn.addEventListener('click', () => {
         const vnDate = btn.getAttribute('data-workdate');
         if (!vnDate) return;
-        const isoDate = vnDateToIsoDate(vnDate);
-        loadExistingDayIntoMobileForm(empName, isoDate, true);
-        showToast(`Đã nạp các ca ngày <strong>${escapeHtml(vnDate)}</strong> lên biểu mẫu để bạn chỉnh sửa!`, 'success');
+        openFormForDay(vnDateToIsoDate(vnDate), 'HISTORY');
       });
     });
 
@@ -3000,6 +3158,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         const recId = btn.getAttribute('data-id');
         const vnDate = btn.getAttribute('data-workdate');
         if (!recId) return;
+        if (!window.confirm(`Xóa ca này của ngày ${vnDate}?`)) return;
 
         const beforeSummary = getEmployeeDaySummary(empName, vnDate);
         const idx = state.records.findIndex((r) => r.id === recId && r.employeeName === empName);
@@ -3144,7 +3303,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         const restNote = isRestDayVn(vn) ? ` (${escapeHtml(getRestDayLabel(vn))} - ngày nghỉ)` : '';
         detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}${restNote}: ${escapeHtml(sum.code || sum.codeLabel)}</strong></div>
           <div class="sub-meta-text">${sum.totalHours > 0 ? escapeHtml(sum.detailStr) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
-          <button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;">${sum.totalHours > 0 ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca ngày này')}</button>`;
+          ${state.calSelectedIso > localIsoToday() ? '<div class="sub-meta-text" style="margin-top:0.4rem;">Chưa tới ngày này nên chưa báo được.</div>' : `<button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;min-height:44px;">${sum.totalHours > 0 ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca ngày này')}</button>`}`;
       } else {
         detail.style.display = 'none';
       }
@@ -3191,6 +3350,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         : state.selectedEmployeeName;
 
     const daily = computeCurrentMobileDailySlots();
+    if (daily.isoDate > localIsoToday()) {
+      playFeedbackSound('ERROR');
+      showToast('Chưa tới ngày này nên chưa báo được. Vui lòng chọn hôm nay hoặc ngày đã qua.', 'error');
+      return;
+    }
     const jobEl = document.getElementById('mobileJobContent');
     const noteEl = document.getElementById('mobileNoteInput');
     const jobText = (jobEl ? jobEl.value : '').trim();
@@ -3212,6 +3376,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         saveLocalState(true);
         await syncWithCentralServer(true);
         playFeedbackSound('SUCCESS');
+        clearEditHistoryFlag();
+        resetWorkerForm();
+        state.workerMobileSubTab = 'CALENDAR';
+        state.calMonth = daily.isoDate.slice(0, 7);
+        state.calSelectedIso = daily.isoDate;
         renderAll();
         showToast(
           `Đã xóa các ca tăng ca ngày <strong>${escapeHtml(daily.workDate)}</strong> (Chuyển về công X).`,
@@ -3320,7 +3489,16 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     };
     releaseZaloScreenWakeLock();
     playFeedbackSound('SUCCESS');
+    try {
+      localStorage.setItem(lastJobKey(activeWorkerName), jobText);
+    } catch (_) {}
+    clearEditHistoryFlag();
+    resetWorkerForm();
+    state.workerMobileSubTab = 'CALENDAR';
+    state.calMonth = daily.isoDate.slice(0, 7);
+    state.calSelectedIso = daily.isoDate;
     renderAll();
+    window.scrollTo({ top: 0 });
 
     if (triggeredYellow) {
       showToast(
@@ -3537,13 +3715,13 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const kpiValSub = document.getElementById('kpiValidationSub');
 
     if (kpiTotalEl) kpiTotalEl.textContent = `${totalRecords} ca`;
-    if (kpiRecordsSub) kpiRecordsSub.textContent = `Tách chuẩn từng ca Sáng / Trưa / Tối vào Excel`;
+    if (kpiRecordsSub) kpiRecordsSub.textContent = `Mỗi buổi Sáng / Trưa / Tối tính là 1 ca`;
     if (kpiEmpEl) kpiEmpEl.textContent = `${uniqueEmpsWithOt} / ${state.employees.length} NV`;
-    if (kpiEmployeesSub) kpiEmployeesSub.textContent = `Khớp Named Range EmployeeNames`;
+    if (kpiEmployeesSub) kpiEmployeesSub.textContent = `Số người có tăng ca / tổng số nhân viên`;
     if (kpiHoursEl) kpiHoursEl.textContent = `${formatHoursClean(totalEstHours)} giờ`;
-    if (kpiHoursSub) kpiHoursSub.textContent = `${overrideCount} dòng ghi đè • Còn lại để trống Cột F`;
-    if (kpiModesEl) kpiModesEl.textContent = `${countCompany} CTy • ${countLunch} Trưa • ${countOutside} Ngoài`;
-    if (kpiModesSub) kpiModesSub.textContent = `Tổng hợp đầy đủ 3 hình thức tăng ca chuẩn`;
+    if (kpiHoursSub) kpiHoursSub.textContent = overrideCount > 0 ? `${overrideCount} ca Quản đốc nhập tay số giờ` : `Tự cộng từ giờ bắt đầu - kết thúc`;
+    if (kpiModesEl) kpiModesEl.textContent = `Công ty ${countCompany} • Trưa ${countLunch} • Ngoài ${countOutside}`;
+    if (kpiModesSub) kpiModesSub.textContent = `Tăng ca tại công ty • Tăng ca giờ trưa • Tăng ca ngoài công ty`;
 
     if (kpiValEl && kpiValSub) {
       if (modAlertCount > 0) {
@@ -4777,27 +4955,24 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     // 2. Sự kiện trong Phân khu 1 (Báo tăng ca cá nhân của Công nhân)
     document.getElementById('btnWorkerSubTabForm')?.addEventListener('click', () => {
       state.workerMobileSubTab = 'FORM';
-      renderWorkerMobileView();
+      state.lastServerAckReceipt = null;
+      renderAll();
     });
 
     document.getElementById('btnWorkerSubTabHistory')?.addEventListener('click', () => {
-      state.workerMobileSubTab = 'HISTORY';
-      renderWorkerMobileView();
+      state.lastServerAckReceipt = null;
+      leaveEditMode('HISTORY');
     });
 
     document.getElementById('btnWorkerSubTabCalendar')?.addEventListener('click', () => {
-      state.workerMobileSubTab = 'CALENDAR';
-      renderWorkerMobileView();
+      state.lastServerAckReceipt = null;
+      leaveEditMode('CALENDAR');
     });
     document.getElementById('btnCalPrev')?.addEventListener('click', () => shiftCalendarMonth(-1));
     document.getElementById('btnCalNext')?.addEventListener('click', () => shiftCalendarMonth(1));
     document.getElementById('workerSubViewCalendar')?.addEventListener('click', (ev) => {
       if (ev.target.closest('#btnCalEditDay')) {
-        const empName = state.loggedInEmployeeName || state.selectedEmployeeName;
-        state.workerMobileSubTab = 'FORM';
-        loadExistingDayIntoMobileForm(empName, state.calSelectedIso, true);
-        renderWorkerMobileView();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        openFormForDay(state.calSelectedIso, 'CALENDAR');
         return;
       }
       const cell = ev.target.closest('[data-iso]');
@@ -4807,9 +4982,34 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     });
 
     document.getElementById('btnViewHistoryAfterAck')?.addEventListener('click', () => {
-      state.workerMobileSubTab = 'HISTORY';
-      renderWorkerMobileView();
+      state.lastServerAckReceipt = null;
+      leaveEditMode('CALENDAR');
     });
+
+    document.getElementById('btnCancelEdit')?.addEventListener('click', cancelEditMode);
+    window.addEventListener('popstate', () => {
+      if (state.formReturnTab) leaveEditMode();
+    });
+    document.getElementById('btnDeleteDayFromForm')?.addEventListener('click', async () => {
+      const iso = document.getElementById('mobileWorkDate')?.value || '';
+      const done = await deleteWorkerDay(currentWorkerName(), isoDateToVnDate(iso));
+      if (done) {
+        clearEditHistoryFlag();
+        resetWorkerForm();
+        state.workerMobileSubTab = state.formReturnTab || 'CALENDAR';
+        state.calMonth = iso.slice(0, 7);
+        state.calSelectedIso = iso;
+        renderAll();
+      }
+    });
+    const jumpDate = (offset) => {
+      const el = document.getElementById('mobileWorkDate');
+      if (!el) return;
+      el.value = addDaysToIsoDate(localIsoToday(), offset);
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    document.getElementById('btnDateToday')?.addEventListener('click', () => jumpDate(0));
+    document.getElementById('btnDateYesterday')?.addEventListener('click', () => jumpDate(-1));
 
     // Chọn nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 18h15 -> X+4)
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
@@ -4923,6 +5123,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       });
     });
 
+    document.getElementById('mobileJobContent')?.addEventListener('input', syncJobChipsToInput);
     document.getElementById('btnSubmitMobileOvertime')?.addEventListener('click', handleWorkerMobileSubmit);
     document.getElementById('btnFlushOfflineNow')?.addEventListener('click', flushOfflineQueue);
 
@@ -5249,6 +5450,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     });
 
     bindAllEvents();
+    resetWorkerForm();
+    const lockDateInit = document.getElementById('matrixLockDateInput');
+    if (lockDateInit) lockDateInit.value = localIsoToday();
     updateLiveClock();
     setInterval(updateLiveClock, 1000);
 

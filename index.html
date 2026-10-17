@@ -136,7 +136,7 @@
             <div class="worker-user-actions">
               <span id="phoneNetBadge" class="phone-network-badge" style="display: none;">Trực tuyến</span>
               <button type="button" id="btnWorkerCardLogout" class="btn-worker-logout">
-                Đổi tài khoản
+                Đăng xuất
               </button>
             </div>
           </div>
@@ -177,7 +177,7 @@
             Đã lưu vào bảng tổng hợp.
           </div>
           <button type="button" id="btnViewHistoryAfterAck" class="btn-ack-view-history">
-            Xem lịch sử đã gửi →
+            Xem bảng công của tôi →
           </button>
         </div>
 
@@ -187,6 +187,15 @@
         <div id="workerSubViewForm" class="worker-subview active">
           <div class="mobile-form-card">
 
+            <!-- THANH BÁO ĐANG SỬA / BÁO CHO MỘT NGÀY CỤ THỂ (CÓ NÚT QUAY LẠI) -->
+            <div id="editModeBar" class="edit-mode-bar" style="display: none;">
+              <div>
+                <strong id="editModeTitle">Đang sửa ngày</strong>
+                <div class="sub-meta-text">Không muốn sửa nữa thì bấm "Quay lại".</div>
+              </div>
+              <button type="button" id="btnCancelEdit" class="action-btn">&larr; Quay lại</button>
+            </div>
+
             <!-- 1. CHỌN NGÀY LÀM VIỆC & TRẠNG THÁI CHỐT CÔNG -->
             <div class="form-section">
               <div class="section-label-row">
@@ -194,7 +203,11 @@
                 <span id="mobileDayCodeBadge" class="est-hours-pill">Công X+4 (4 giờ)</span>
               </div>
               <div class="worker-date-bar">
-                <input type="date" id="mobileWorkDate" class="form-control" value="2026-10-16" />
+                <input type="date" id="mobileWorkDate" class="form-control" />
+                <div class="date-quick">
+                  <button type="button" id="btnDateToday" class="slot-mini-btn">Hôm nay</button>
+                  <button type="button" id="btnDateYesterday" class="slot-mini-btn">Hôm qua</button>
+                </div>
               </div>
               <div id="mobileDayLockedNotice" class="day-locked-notice-bar" style="display: none;">
                 Quản đốc đã chốt bảng công ngày này. Nếu bạn sửa lại giờ tăng ca, ô công của bạn sẽ đánh dấu màu vàng để Quản đốc kiểm tra lại.
@@ -410,7 +423,10 @@
             </div>
 
             <button type="button" id="btnSubmitMobileOvertime" class="btn-giant-submit-ot">
-              <span id="btnSubmitMobileText">Lưu báo tăng ca (X+4)</span>
+              <span id="btnSubmitMobileText">Lưu báo tăng ca</span>
+            </button>
+            <button type="button" id="btnDeleteDayFromForm" class="btn-danger-outline" style="display: none;">
+              Xóa báo tăng ca ngày này
             </button>
 
           </div>
@@ -452,7 +468,7 @@
             <div class="history-card-header">
               <div>
                 <div class="section-label">Các ca đã báo của <span id="historyEmpNameTitle">Tống Đức Duy</span></div>
-                <div class="sub-meta-text">Bấm "Sửa ngày này" nếu bạn chấm nhầm giờ tăng ca</div>
+                <div class="sub-meta-text">Bấm "Sửa ngày này" nếu bạn báo nhầm giờ</div>
               </div>
               <div id="historyEmpSummaryBadge" class="est-hours-pill">
                 0 ca • 0 giờ
@@ -524,9 +540,9 @@
             <div id="kpiHoursSub" class="kpi-sub">Tự động cộng theo ca</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-label">Phân loại hình thức</div>
-            <div id="kpiWorkModesBreakdown" class="kpi-value" style="font-size: 1.05rem;">Công ty / Trưa / Ngoài</div>
-            <div id="kpiWorkModesSub" class="kpi-sub">Theo từng ca</div>
+            <div class="kpi-label">Số ca theo nơi làm</div>
+            <div id="kpiWorkModesBreakdown" class="kpi-value" style="font-size: 1.05rem;">Tại công ty / Trưa / Ngoài</div>
+            <div id="kpiWorkModesSub" class="kpi-sub">Đếm theo từng ca đã báo trong tháng</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Trạng thái chốt công</div>
