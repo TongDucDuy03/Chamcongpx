@@ -402,6 +402,7 @@
     calSelectedIso: '',
     formReturnTab: null, // tab quay về khi bấm Quay lại (CALENDAR | HISTORY)
     editingIso: '',
+    formLoadedIso: '',
     mobileWorkerPickerOpen: false,
     mobileEntryMode: 'STANDARD',
     mobileWorkMode: 'Tăng ca tại công ty',
@@ -2473,6 +2474,7 @@
       }
     }
 
+    state.formLoadedIso = dayRecords.length > 0 ? isoDate : '';
     if (dayRecords.length > 0 && !restDayLoad) {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = false;
@@ -2731,7 +2733,7 @@
    * Đưa form về trạng thái sạch: ngày hôm nay, chưa tích ca nào (tránh gửi nhầm),
    * nội dung công việc điền sẵn theo lần báo gần nhất của chính người đó.
    */
-  function resetWorkerForm() {
+  function resetWorkerForm(opts = {}) {
     const setVal = (id, v) => {
       const el = document.getElementById(id);
       if (el) el.value = v;
@@ -2743,7 +2745,7 @@
     const today = localIsoToday();
     const dateEl = document.getElementById('mobileWorkDate');
     if (dateEl) {
-      dateEl.value = today;
+      if (!opts.keepDate) dateEl.value = today;
       dateEl.max = today;
     }
     ['slotMorningCheck', 'slotLunchCheck', 'slotEveningCheck', 'slotEveningOvernight', 'restWorkCheck'].forEach((id) =>
@@ -2771,6 +2773,15 @@
 
     state.formReturnTab = null;
     state.editingIso = '';
+    state.formLoadedIso = '';
+
+    // Ngày hôm nay đã có ca thì nạp sẵn vào form: báo thêm ca Tối không làm mất ca Sáng/Trưa đã báo
+    if (!opts.skipExisting && !opts.keepDate) {
+      const empNow = currentWorkerName();
+      if (empNow && getEmployeeDaySummary(empNow, isoDateToVnDate(today)).records.length > 0) {
+        loadExistingDayIntoMobileForm(empNow, today, false);
+      }
+    }
   }
 
   function clearEditHistoryFlag() {
@@ -2784,7 +2795,7 @@
   /** Mở form cho 1 ngày cụ thể (từ Bảng công hoặc Lịch sử). returnTab = tab sẽ quay về khi bấm Quay lại */
   function openFormForDay(iso, returnTab) {
     const empName = currentWorkerName();
-    resetWorkerForm();
+    resetWorkerForm({ skipExisting: true });
     state.formReturnTab = returnTab;
     state.editingIso = iso;
     state.workerMobileSubTab = 'FORM';
@@ -4887,6 +4898,10 @@
       if (hasExisting) {
         loadExistingDayIntoMobileForm(activeWorkerName, isoDate, false);
       } else {
+        if (state.formLoadedIso) {
+          // Đang xem một ngày đã có ca mà chuyển sang ngày chưa có: làm sạch form, tránh gửi nhầm ca của ngày khác
+          resetWorkerForm({ skipExisting: true, keepDate: true });
+        }
         const restChk = document.getElementById('restWorkCheck');
         if (restChk) restChk.checked = false;
         renderWorkerMobileView();
