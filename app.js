@@ -1593,13 +1593,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         btnSubmit.classList.add('locking-wait');
         btnSubmitText.textContent = `Đang chờ mạng (${qLen} phiếu)`;
       } else {
-        btnSubmit.disabled = false;
+        // Trạng thái nút Lưu (khóa khi chưa chọn ca, nhãn theo ngày) do renderWorkerMobileView quyết định
         btnSubmit.classList.remove('locking-wait');
-        const preview = computeCurrentMobilePreviewStrings();
-        btnSubmitText.textContent =
-          preview.estHours > 0
-            ? `Lưu báo tăng ca ngày ${preview.workDate} (${preview.codeLabel} • ${formatHoursClean(preview.estHours)} giờ)`
-            : `Lưu ngày ${preview.workDate} (Không tăng ca)`;
+        renderWorkerMobileView();
       }
     }
 
