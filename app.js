@@ -5238,6 +5238,7 @@
     snapshot: null, // ảnh chụp dữ liệu đã đồng bộ với máy chủ
     queue: Promise.resolve(), // xếp hàng để gửi/tải không chạy chồng nhau
     lastSig: '',
+    lastPulseSig: '',
     pendingCount: 0,
     timer: null,
     bound: false
@@ -5311,6 +5312,7 @@
     state.holidays = {};
     remote.snapshot = null;
     remote.lastSig = '';
+    remote.lastPulseSig = '';
     remote.pendingCount = 0;
   }
 
@@ -5380,6 +5382,7 @@
       return { ok: true, deferred: true };
     }
 
+    remote.lastPulseSig = d.sig || '';
     const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts]);
     if (!opts.force && remote.snapshot && sig === remote.lastSig) {
       return { ok: true, changed: false, data: d };
@@ -5474,6 +5477,22 @@
         const p = await remotePushInner();
         if (p && (p.queued || p.rejected)) return p;
       }
+      if (opts && opts.cheap && remote.lastPulseSig) {
+        // Hỏi nhanh (vài chục byte): không có gì mới thì khỏi tải lại cả bảng dữ liệu
+        const pr = await remoteClient.rpc('app_pulse', { p_token: remote.token });
+        if (pr.ok && pr.data && pr.data.sig === remote.lastPulseSig) return { ok: true, changed: false, cheap: true };
+        if (!pr.ok) {
+          if (window.OTRemote.isRetryable(pr)) {
+            state.serverConnected = false;
+            updateSyncStatusUI();
+            return { ok: false, network: true, message: pr.message };
+          }
+          if (pr.hint === 'unauthorized' || pr.hint === 'inactive') {
+            remoteForceLogout(pr.message);
+            return { ok: false, unauthorized: true, message: pr.message };
+          }
+        }
+      }
       const r = await remotePullInner(opts || {});
       if (r.ok && r.changed) renderAll();
       else updateSyncStatusUI();
@@ -5523,7 +5542,7 @@
   async function remotePoll(force) {
     if (!remote.token || document.visibilityState === 'hidden') return;
     if (!force && remoteUserBusy()) return;
-    await remoteSyncPull({});
+    await remoteSyncPull({ cheap: true });
   }
 
   function remoteStopPolling() {

@@ -32,11 +32,12 @@ Khi chưa cài đặt, ứng dụng chạy chế độ thử: dữ liệu chỉ 
 
 ## Bảo mật
 
-- Mọi bảng dữ liệu nằm trong schema riêng `ot`, không mở ra ngoài API. Trình duyệt chỉ gọi được 5 hàm `app_*` (đăng nhập, đăng xuất, đổi mật khẩu, tải, lưu), mỗi hàm tự kiểm tra phiên đăng nhập.
+- Mọi bảng dữ liệu nằm trong schema riêng `ot`, không mở ra ngoài API. Trình duyệt chỉ gọi được 6 hàm `app_*` (đăng nhập, đăng xuất, đổi mật khẩu, tải, hỏi nhanh có gì mới, lưu), mỗi hàm tự kiểm tra phiên đăng nhập.
 - Mật khẩu băm bcrypt; sai 5 lần liên tiếp thì khóa 15 phút; phiên công nhân 30 ngày, phiên quản trị 12 giờ.
 - Công nhân chỉ đọc/ghi được dữ liệu của chính mình, không báo được ngày chưa tới, không báo cho người khác, không thấy dữ liệu người khác.
 - Máy chủ kiểm tra lại mọi thứ (trùng giờ, ngày vào làm/nghỉ việc, định dạng...) nên dù ai đó sửa mã trên trình duyệt cũng không vượt được.
 - Nhiều người báo cùng lúc không mất dữ liệu vì mỗi lần Lưu chỉ gửi đúng các dòng thay đổi.
+- Tiết kiệm lưu lượng: máy quản trị cứ 30 giây hỏi nhanh "có gì mới không" (vài chục byte), chỉ tải lại dữ liệu khi có thay đổi.
 
 ## Lưu ý vận hành
 

@@ -6,7 +6,7 @@
 --
 -- Thiết kế bảo mật:
 --  * Toàn bộ bảng nằm trong schema riêng "ot" (không mở ra ngoài API).
---  * Trình duyệt chỉ gọi 5 hàm app_* bên dưới; mỗi hàm tự kiểm tra phiên đăng nhập.
+--  * Trình duyệt chỉ gọi 6 hàm app_* bên dưới; mỗi hàm tự kiểm tra phiên đăng nhập.
 --  * Mật khẩu được băm (bcrypt), không ai đọc lại được, kể cả quản trị viên.
 --  * Công nhân chỉ đọc/ghi được dữ liệu của chính mình; quản trị viên được tất cả.
 --  * Mỗi lần lưu chỉ thêm/sửa/xóa đúng dòng thay đổi, nhiều người báo cùng lúc không mất dữ liệu.
@@ -103,7 +103,16 @@ create table if not exists ot.mod_alerts (
   updated_at timestamptz not null default now()
 );
 
+-- Số phiên bản thay đổi dữ liệu: để máy khách hỏi nhanh "có gì mới không" thay vì tải lại toàn bộ (tiết kiệm lưu lượng)
+create table if not exists ot.meta (
+  id int primary key default 1 check (id = 1),
+  version bigint not null default 0
+);
+insert into ot.meta (id) values (1) on conflict (id) do nothing;
+alter table ot.employees add column if not exists rev bigint not null default 0;
+
 alter table ot.employees enable row level security;
+alter table ot.meta enable row level security;
 alter table ot.sessions enable row level security;
 alter table ot.records enable row level security;
 alter table ot.holidays enable row level security;
@@ -340,6 +349,7 @@ declare
   v_holidays jsonb;
   v_locked jsonb;
   v_alerts jsonb;
+  v_sig text;
 begin
   v := ot.require_session(p_token);
 
@@ -349,9 +359,10 @@ begin
     if d_to < d_from then d_to := d_from; end if;
     if d_to - d_from > 400 then d_from := d_to - 400; end if;
   else
-    d_from := today - 730;
-    d_to := today + 366;
+    d_from := today - 400;
+    d_to := today + 60;
   end if;
+  v_sig := case when v.role = 'admin' then (select m.version from ot.meta m where m.id = 1)::text else v.rev::text end;
 
   select coalesce(jsonb_agg(jsonb_build_object(
            'name', e.name,
@@ -399,12 +410,26 @@ begin
     'mustChangePassword', v.must_change_password,
     'serverTime', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'vnToday', to_char(today, 'YYYY-MM-DD'),
+    'sig', v_sig,
     'window', jsonb_build_object('from', d_from, 'to', d_to),
     'employees', v_employees,
     'records', v_records,
     'holidays', v_holidays,
     'lockedDays', v_locked,
     'dayModAlerts', v_alerts
+  );
+end $$;
+
+-- Hỏi nhanh "có gì mới không": chỉ trả về vài byte. Máy khách chỉ tải lại dữ liệu khi chữ ký đổi.
+create or replace function public.app_pulse(p_token text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v ot.employees;
+begin
+  v := ot.require_session(p_token);
+  return jsonb_build_object(
+    'ok', true,
+    'sig', case when v.role = 'admin' then (select m.version from ot.meta m where m.id = 1)::text else v.rev::text end
   );
 end $$;
 
@@ -440,6 +465,9 @@ declare
   v_wd date;
   v_data jsonb;
   v_limit int;
+  v_bump bigint[] := '{}';
+  v_bump_all boolean := false;
+  v_eid bigint;
 begin
   v := ot.require_session(p_token);
   is_admin := (v.role = 'admin');
@@ -504,7 +532,7 @@ begin
         end if;
         update ot.employees
            set username = v_user, default_overtime_type = v_type, default_work_mode = v_mode,
-               start_date = v_sd, end_date = v_ed, updated_at = now()
+               start_date = v_sd, end_date = v_ed, updated_at = now(), rev = rev + 1
          where id = emp.id;
         if v_pwd is not null then
           update ot.employees
@@ -531,6 +559,10 @@ begin
   for v_id in select jsonb_array_elements_text(ot.arr(p_ops, 'recordsDelete')) loop
     if not is_admin and exists (select 1 from ot.records where id = v_id and employee_id <> v.id) then
       perform ot.fail('forbidden', 'Bạn chỉ được xóa ca của chính mình.');
+    end if;
+    select employee_id into v_eid from ot.records where id = v_id;
+    if found then
+      v_bump := v_bump || v_eid;
     end if;
     delete from ot.records where id = v_id and (is_admin or employee_id = v.id);
   end loop;
@@ -607,6 +639,12 @@ begin
       perform ot.fail('bad_record', 'Hình thức tăng ca không hợp lệ.');
     end if;
 
+    select employee_id into v_eid from ot.records where id = v_id;
+    if found then
+      v_bump := v_bump || v_eid;
+    end if;
+    v_bump := v_bump || rec_emp.id;
+
     update ot.records
        set employee_id = rec_emp.id,
            job_content = v_job,
@@ -682,9 +720,11 @@ begin
     end if;
     insert into ot.holidays (work_date, name) values (v_wd, v_name)
     on conflict (work_date) do update set name = excluded.name;
+    v_bump_all := true;
   end loop;
   for v_key in select jsonb_array_elements_text(ot.arr(p_ops, 'holidaysDelete')) loop
     delete from ot.holidays where work_date = ot.parse_vn_date(v_key);
+    v_bump_all := true;
   end loop;
 
   -- ===== Chốt công =====
@@ -696,9 +736,11 @@ begin
     end if;
     insert into ot.locked_days (work_date, data) values (v_wd, v_data)
     on conflict (work_date) do update set data = excluded.data, updated_at = now();
+    v_bump_all := true;
   end loop;
   for v_key in select jsonb_array_elements_text(ot.arr(p_ops, 'lockedDelete')) loop
     delete from ot.locked_days where work_date = ot.parse_vn_date(v_key);
+    v_bump_all := true;
   end loop;
 
   -- ===== Cảnh báo sửa sau chốt =====
@@ -722,12 +764,25 @@ begin
     end if;
     insert into ot.mod_alerts (alert_key, work_date, employee_id, data) values (v_key, v_wd, emp.id, v_data)
     on conflict (alert_key) do update set data = excluded.data, updated_at = now();
+    v_bump := v_bump || emp.id;
   end loop;
   if is_admin then
     for v_key in select jsonb_array_elements_text(ot.arr(p_ops, 'alertsDelete')) loop
+      select employee_id into v_eid from ot.mod_alerts where alert_key = v_key;
+      if found then
+        v_bump := v_bump || v_eid;
+      end if;
       delete from ot.mod_alerts where alert_key = v_key;
     end loop;
   end if;
+
+  -- Báo cho máy khách biết có thay đổi (admin: mọi thay đổi; công nhân: chỉ phần liên quan tới họ)
+  if v_bump_all then
+    update ot.employees set rev = rev + 1 where role = 'worker';
+  elsif array_length(v_bump, 1) is not null then
+    update ot.employees set rev = rev + 1 where id = any (v_bump);
+  end if;
+  update ot.meta set version = version + 1 where id = 1;
 
   return jsonb_build_object(
     'ok', true,
@@ -783,12 +838,14 @@ revoke all on function public.app_login(text, text) from public;
 revoke all on function public.app_logout(text) from public;
 revoke all on function public.app_change_password(text, text, text) from public;
 revoke all on function public.app_pull(text, date, date) from public;
+revoke all on function public.app_pulse(text) from public;
 revoke all on function public.app_push(text, jsonb) from public;
 
 grant execute on function public.app_login(text, text) to anon, authenticated;
 grant execute on function public.app_logout(text) to anon, authenticated;
 grant execute on function public.app_change_password(text, text, text) to anon, authenticated;
 grant execute on function public.app_pull(text, date, date) to anon, authenticated;
+grant execute on function public.app_pulse(text) to anon, authenticated;
 grant execute on function public.app_push(text, jsonb) to anon, authenticated;
 
 notify pgrst, 'reload schema';
