@@ -1762,8 +1762,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   function generateExactTemplateXlsxBytes() {
     // 1. Lọc sạch chỉ lấy các dòng hợp lệ có Nội dung công việc (Mục 1 Hướng dẫn)
     // Sắp xếp theo thời gian để bảng xuất ra gọn gàng, chuyên nghiệp
+    const exportMonthKey = getSelectedMonthKey();
     const validRecords = state.records
-      .filter((r) => r && r.employeeName && r.jobContent && r.jobContent.trim().length > 0)
+      .filter((r) => r && r.employeeName && r.jobContent && r.jobContent.trim().length > 0 && isRecordInMonth(r, exportMonthKey))
       .slice()
       .sort((a, b) => {
         const msA = parseVnDateTimeToMs(a.startTime) || 0;
@@ -1772,7 +1773,17 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         return a.employeeName.localeCompare(b.employeeName, 'vi');
       });
 
-    const employees = state.employees.length > 0 ? state.employees : DEFAULT_EMPLOYEES;
+    const [exY, exM] = exportMonthKey.split('-').map(Number);
+    const exFirstIso = `${exY}-${pad2(exM)}-01`;
+    const exLastIso = `${exY}-${pad2(exM)}-${pad2(new Date(exY, exM, 0).getDate())}`;
+    const usedNames = new Set(validRecords.map((r) => r.employeeName));
+    const allEmployees = state.employees.length > 0 ? state.employees : DEFAULT_EMPLOYEES;
+    // Chỉ đưa vào danh sách nhân viên của tháng: người đang làm trong tháng hoặc có dòng tăng ca trong tháng
+    const employees = allEmployees.filter(
+      (e) =>
+        usedNames.has(e.name) ||
+        (!(e.endDate && e.endDate < exFirstIso) && !(e.startDate && e.startDate > exLastIso))
+    );
     const empEndRow = employees.length + 1; // Bắt đầu từ A2 -> A{empEndRow}
 
     // 2. Xây dựng bảng SharedStrings (`xl/sharedStrings.xml`)
@@ -2148,6 +2159,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     if (state.offlineQueue.length > 0) {
       flushOfflineQueue();
     }
+    if (!state.records.some((r) => isRecordInMonth(r, getSelectedMonthKey()))) {
+      showToast('Tháng này chưa có dòng tăng ca nào để xuất.', 'warn');
+      return;
+    }
     const zipBytes = generateExactTemplateXlsxBytes();
     const blob = new Blob([zipBytes], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -2155,7 +2170,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Mẫu chi tiết tăng ca 10_2026.xlsx';
+    const exKey = getSelectedMonthKey();
+    const exFileName = `Mẫu chi tiết tăng ca ${exKey.slice(5)}_${exKey.slice(0, 4)}.xlsx`;
+    a.download = exFileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2163,7 +2180,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     playFeedbackSound('SUCCESS');
     showToast(
-      `Đã xuất thành công file <strong>Mẫu chi tiết tăng ca 10_2026.xlsx</strong> (${state.records.length} dòng hợp lệ, giữ nguyên 3 Sheet &amp; Named Ranges)!`,
+      `Đã xuất file <strong>${escapeHtml(exFileName)}</strong> (${state.records.filter((r) => isRecordInMonth(r, exKey)).length} dòng tăng ca của tháng ${exKey.slice(5)}/${exKey.slice(0, 4)}).`,
       'success'
     );
   }
@@ -3434,8 +3451,25 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   // 9. GIAO DIỆN PHÂN KHU 2: QUẢN TRỊ ADMIN, BẢNG CHẤM CÔNG (X+4) & 3 SHEET EXCEL
   // ==========================================================================
 
+  function getSelectedMonthKey() {
+    return /^\d{4}-\d{2}$/.test(state.matrixMonth || '') ? state.matrixMonth : localIsoToday().slice(0, 7);
+  }
+
+  function isRecordInMonth(rec, monthKey) {
+    const [y, m] = monthKey.split('-');
+    return String(rec.workDate || '').endsWith(`/${m}/${y}`);
+  }
+
+  function setSelectedMonth(monthKey) {
+    if (!/^\d{4}-\d{2}$/.test(monthKey || '')) return;
+    state.matrixMonth = monthKey;
+    renderAll();
+  }
+
   function getFilteredAdminRecords() {
+    const monthKey = getSelectedMonthKey();
     return state.records.filter((r) => {
+      if (!isRecordInMonth(r, monthKey)) return false;
       if (state.adminFilterEmp !== 'ALL' && r.employeeName !== state.adminFilterEmp) {
         return false;
       }
@@ -3452,8 +3486,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   }
 
   function renderAdminDashboard() {
+    const monthRecords = state.records.filter((r) => isRecordInMonth(r, getSelectedMonthKey()));
     const totalBadge = document.getElementById('adminTotalBadge');
-    if (totalBadge) totalBadge.textContent = `${state.records.length} dòng`;
+    if (totalBadge) totalBadge.textContent = `${monthRecords.length} dòng`;
 
     const lockScreen = document.getElementById('adminLockScreen');
     const dashContent = document.getElementById('adminDashboardContent');
@@ -3475,16 +3510,16 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     }
 
     // Tính toán 5 KPI Cards
-    const totalRecords = state.records.length;
-    const uniqueEmpsWithOt = new Set(state.records.map((r) => r.employeeName)).size;
-    const totalEstHours = state.records.reduce((s, r) => s + computeEstimatedHours(r), 0);
-    const overrideCount = state.records.filter(
+    const totalRecords = monthRecords.length;
+    const uniqueEmpsWithOt = new Set(monthRecords.map((r) => r.employeeName)).size;
+    const totalEstHours = monthRecords.reduce((s, r) => s + computeEstimatedHours(r), 0);
+    const overrideCount = monthRecords.filter(
       (r) => r.overrideHours !== null && r.overrideHours !== '' && r.overrideHours !== undefined
     ).length;
 
-    const countCompany = state.records.filter((r) => r.workMode === 'Tăng ca tại công ty').length;
-    const countLunch = state.records.filter((r) => r.workMode === 'Tăng ca trưa').length;
-    const countOutside = state.records.filter((r) => r.workMode === 'Tăng ca ngoài công ty').length;
+    const countCompany = monthRecords.filter((r) => r.workMode === 'Tăng ca tại công ty').length;
+    const countLunch = monthRecords.filter((r) => r.workMode === 'Tăng ca trưa').length;
+    const countOutside = monthRecords.filter((r) => r.workMode === 'Tăng ca ngoài công ty').length;
 
     const modAlertKeys = Object.keys(state.dayModAlerts || {});
     const modAlertCount = modAlertKeys.length;
@@ -3614,6 +3649,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const monthSuffix = `/${pad2(mxMonth)}/${mxYear}`;
     const monthInputEl = document.getElementById('matrixMonthInput');
     if (monthInputEl && monthInputEl.value !== matrixMonth) monthInputEl.value = matrixMonth;
+    const exportMonthEl = document.getElementById('exportMonthInput');
+    if (exportMonthEl && exportMonthEl.value !== matrixMonth) exportMonthEl.value = matrixMonth;
     if (state.matrixShowAllDays) {
       const dim = new Date(mxYear, mxMonth, 0).getDate();
       for (let d = 1; d <= dim; d++) {
@@ -3700,7 +3737,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         let empMonthTotalHours = 0;
 
         // Tính tổng cả tháng của nhân viên
-        const allEmpRecs = state.records.filter((r) => r.employeeName === emp.name);
+        const allEmpRecs = state.records.filter((r) => r.employeeName === emp.name && isRecordInMonth(r, matrixMonth));
         const uniqueEmpDates = new Set(allEmpRecs.map((r) => r.workDate).filter(Boolean));
         empOtDaysCount = uniqueEmpDates.size;
         empMonthTotalHours = Math.round(allEmpRecs.reduce((s, r) => s + computeEstimatedHours(r), 0) * 100) / 100;
@@ -4924,11 +4961,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       );
     });
 
-    document.getElementById('matrixMonthInput')?.addEventListener('change', (e) => {
-      if (e.target.value) {
-        state.matrixMonth = e.target.value;
-        renderExcelMatrixSheet();
-      }
+    ['matrixMonthInput', 'exportMonthInput'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('change', (e) => {
+        if (e.target.value) setSelectedMonth(e.target.value);
+      });
     });
 
     document.getElementById('toggleMatrixShowAllDays')?.addEventListener('change', (e) => {
