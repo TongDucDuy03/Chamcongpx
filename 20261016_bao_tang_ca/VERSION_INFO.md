@@ -7,5 +7,5 @@
 - **Danh mục thành phẩm thuộc phiên bản này:**
   1. Bộ Web App Báo Tăng Ca 3 Chạm (`index.html`, `styles.css`, `app.js`)
   2. Máy chủ LAN không thư viện ngoài (`server.js`, `KHOI_CHAY_SERVER.bat`)
-  3. Bộ triển khai GitHub Pages 24/7 & Bảo mật Supabase RLS (`DEPLOY_GITHUB_PAGES.bat`, `SUPABASE_SECURITY_RLS.sql`, `.github/workflows/deploy-github-pages.yml`, `.nojekyll`)
+  3. Bộ triển khai GitHub Pages 24/7 & Bảo mật Supabase RLS (`DEPLOY_GITHUB_PAGES.bat`, `supabase_setup.sql`, `.github/workflows/deploy-github-pages.yml`, `.nojekyll`)
   4. Bộ phôi & dữ liệu xuất Excel chuẩn (`Mau_chi_tiet_tang_ca_10_2026_GOC.xlsx`, `data/Mau_chi_tiet_tang_ca_10_2026_AUTO.xlsx`, `data/overtime_db.json`)

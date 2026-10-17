@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%232563eb'/%3E%3Cpath d='M16 8v8l5 3' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -135,8 +136,8 @@
             </div>
             <div class="worker-user-actions">
               <span id="phoneNetBadge" class="phone-network-badge" style="display: none;">Trực tuyến</span>
-              <button type="button" id="btnWorkerCardLogout" class="btn-worker-logout">
-                Đăng xuất
+              <button type="button" id="btnWorkerChangePwd" class="btn-worker-logout">
+                Đổi mật khẩu
               </button>
             </div>
           </div>
@@ -150,7 +151,7 @@
               Bảng công
             </button>
             <button type="button" id="btnWorkerSubTabHistory" class="worker-subtab-btn">
-              <span>Lịch sử đã gửi</span>
+              <span>Lịch sử</span>
               <span id="workerHistoryTabCount" class="worker-subtab-count">0</span>
             </button>
           </div>
@@ -204,6 +205,7 @@
               </div>
               <div class="worker-date-bar">
                 <input type="date" id="mobileWorkDate" class="form-control" />
+                <div id="mobileDateHuman" class="date-human"></div>
                 <div class="date-quick">
                   <button type="button" id="btnDateToday" class="slot-mini-btn">Hôm nay</button>
                   <button type="button" id="btnDateYesterday" class="slot-mini-btn">Hôm qua</button>
@@ -251,11 +253,11 @@
             </div>
 
             <!-- 3. TÍCH CHỌN / CHỈNH GIỜ TỪNG BUỔI (SÁNG • TRƯA • TỐI) -->
-            <div class="form-section normal-day-only">
-              <div class="section-label-row">
-                <span class="section-label">3. Chi tiết các khung tăng ca trong ngày</span>
-                <span id="mobileEstHoursBadge" class="sub-meta-text">Tổng: 4.0 giờ</span>
-              </div>
+            <details id="slotDetails" class="form-section normal-day-only slot-details">
+              <summary class="section-label-row">
+                <span class="section-label">3. Chỉnh giờ từng buổi (nếu cần)</span>
+                <span id="mobileEstHoursBadge" class="sub-meta-text">X (0 giờ)</span>
+              </summary>
 
               <div class="daily-slots-stack">
                 <!-- KHUNG 1: CA SÁNG SỚM -->
@@ -347,7 +349,7 @@
                   </div>
                 </div>
               </div>
-            </div>
+            </details>
 
             <!-- NGÀY NGHỈ (CHỦ NHẬT / NGÀY LỄ): CHỈ BÁO NẾU CÓ ĐI LÀM, GHI THEO SỐ GIỜ THỰC TẾ -->
             <div id="restDaySection" class="form-section rest-day-section" style="display: none;">
@@ -522,6 +524,11 @@
       <!-- NỘI DUNG DASHBOARD ADMIN -->
       <div id="adminDashboardContent">
 
+        <div id="adminEmptyHint" class="admin-empty-hint" style="display: none;">
+          <strong>Chưa có nhân viên nào.</strong> Bấm <b>"Nhân sự &amp; Tài khoản"</b> để thêm công nhân và cấp tài khoản cho họ.
+          Có file sao lưu cũ thì bấm <b>"Nhập file"</b> để đưa dữ liệu cũ vào.
+        </div>
+
         <!-- THẺ TỔNG HỢP GỌN GÀNG -->
         <div class="kpi-grid">
           <div class="kpi-card">
@@ -595,8 +602,8 @@
               <button type="button" id="btnOpenManageEmployees" class="action-btn">
                 Nhân sự &amp; Tài khoản
               </button>
-              <button type="button" id="btnAdminSyncCloudNow" class="action-btn" title="Đồng bộ dữ liệu">
-                Đồng bộ
+              <button type="button" id="btnAdminSyncCloudNow" class="action-btn" title="Tải lại dữ liệu mới nhất từ máy chủ">
+                Tải lại
               </button>
               <button type="button" id="btnExportBackupJson" class="action-btn" title="Sao lưu file JSON">
                 Sao lưu
@@ -833,74 +840,28 @@
           </div>
         </div>
 
-        <!-- CỘT PHẢI: KẾT NỐI CLOUD DB (TÙY CHỌN) -->
+        <!-- CỘT PHẢI: KẾT NỐI SUPABASE (DỮ LIỆU DÙNG CHUNG) -->
         <div class="panel-card">
           <div class="panel-header">
             <div>
-              <div class="panel-title">Đồng bộ cơ sở dữ liệu Cloud (Tùy chọn)</div>
+              <div class="panel-title">Lưu dữ liệu dùng chung (Supabase)</div>
               <div class="panel-subtitle">
-                Cấu hình Supabase nếu muốn lưu trữ trực tuyến 24/7
+                Công nhân báo ở bất kỳ đâu, quản đốc thấy ngay trên máy mình
               </div>
             </div>
-            <span id="cloudConnectionBadge" class="est-hours-pill">
-              Sẵn sàng
-            </span>
+            <span id="cloudConnectionBadge" class="est-hours-pill">Chưa bật</span>
           </div>
           <div class="panel-body">
-            <div class="storage-layers-list">
-
-              <div class="storage-layer-card">
-                <div class="form-grid-2" style="gap: 0.65rem; margin-bottom: 0.6rem;">
-                  <div class="form-group" style="margin-bottom: 0;">
-                    <label class="form-label" for="supabaseUrlInput">Supabase Project URL</label>
-                    <input
-                      type="text"
-                      id="supabaseUrlInput"
-                      class="form-control"
-                      placeholder="https://xyzcompany.supabase.co"
-                    />
-                  </div>
-                  <div class="form-group" style="margin-bottom: 0;">
-                    <label class="form-label" for="supabaseAnonKeyInput">Supabase Anon Key</label>
-                    <input
-                      type="password"
-                      id="supabaseAnonKeyInput"
-                      class="form-control"
-                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                    />
-                  </div>
-                </div>
-
-                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                  <button type="button" id="btnSaveSupabaseConfig" class="action-btn primary">
-                    Lưu cấu hình
-                  </button>
-                  <button type="button" id="btnRunCloudMigration" class="action-btn">
-                    Đồng bộ dữ liệu lên Cloud
-                  </button>
-                </div>
-                <div id="migrationLogText" style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.55rem;">
-                  Đang lưu trữ trên máy chủ nội bộ &amp; trình duyệt.
-                </div>
-              </div>
-
-              <div class="storage-layer-card">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.45rem; flex-wrap: wrap; gap: 0.4rem;">
-                  <strong style="font-size: 0.85rem; color: var(--text-main);">
-                    Mã SQL tạo bảng (`SUPABASE_SECURITY_RLS.sql`)
-                  </strong>
-                  <div style="display: flex; gap: 0.4rem;">
-                    <button type="button" id="btnCopySqlRls" class="action-btn" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
-                      Sao chép SQL
-                    </button>
-                    <button type="button" id="btnDownloadSqlRls" class="action-btn" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
-                      Tải file .SQL
-                    </button>
-                  </div>
-                </div>
-                <pre id="sqlRlsPreviewBox" class="sql-code-viewer">-- Đang tải...</pre>
-              </div>
-
+            <div id="cloudStatusText" class="cloud-status-text"></div>
+            <ol class="setup-steps">
+              <li>Tạo project miễn phí trên supabase.com (chọn vùng Singapore).</li>
+              <li>Vào <b>SQL Editor</b>, dán toàn bộ file SQL (nút bên dưới) rồi bấm <b>Run</b>.</li>
+              <li>Chạy thêm dòng: <code>select ot.bootstrap_admin('mật-khẩu-admin-của-bạn');</code></li>
+              <li>Mở file <code>config.js</code>, điền Project URL và khóa Publishable, rồi đẩy lên GitHub.</li>
+            </ol>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+              <button type="button" id="btnCopySqlRls" class="action-btn primary">Sao chép file SQL</button>
+              <button type="button" id="btnDownloadSqlRls" class="action-btn">Tải file SQL</button>
             </div>
           </div>
         </div>
@@ -1057,7 +1018,7 @@
             </div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="newEmpStartDate">Ngày vào làm (để trống = hôm nay)</label>
+            <label class="form-label" for="newEmpStartDate">Ngày vào làm (chỉ nhập nếu là nhân viên mới trong tháng)</label>
             <input type="date" id="newEmpStartDate" class="form-control" />
           </div>
           <div class="form-grid-2">
@@ -1140,12 +1101,50 @@
   </div>
 
   <!-- ========================================================================
+       MODAL ĐỔI MẬT KHẨU (CÔNG NHÂN & QUẢN TRỊ VIÊN)
+       ======================================================================== -->
+  <div id="modalChangePassword" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="changePwdTitle">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="changePwdTitle">Đổi mật khẩu</h3>
+        <button type="button" id="btnCloseChangePwdModal" class="modal-close-btn" aria-label="Đóng">Đóng</button>
+      </div>
+      <div class="modal-body">
+        <div id="changePwdHint" class="sub-meta-text" style="margin-bottom: 0.7rem; display: none;"></div>
+        <div class="form-group">
+          <label class="form-label" for="cpOld">Mật khẩu hiện tại</label>
+          <input type="password" id="cpOld" class="form-control" autocomplete="current-password" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cpNew">Mật khẩu mới</label>
+          <input type="password" id="cpNew" class="form-control" autocomplete="new-password" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cpNew2">Nhập lại mật khẩu mới</label>
+          <input type="password" id="cpNew2" class="form-control" autocomplete="new-password" />
+        </div>
+        <div id="cpError" class="login-error-box" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btnCpLater" class="action-btn" style="display: none;">Để sau</button>
+        <button type="button" id="btnCpSubmit" class="action-btn primary">Đổi mật khẩu</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="appLoadingOverlay" class="app-loading" style="display: none;" role="status" aria-live="polite">
+    <div class="app-loading-box">Đang tải dữ liệu...</div>
+  </div>
+
+  <!-- ========================================================================
        TOAST NOTIFICATION CONTAINER
        ======================================================================== -->
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
   <!-- Main Application Script -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+  <script src="config.js"></script>
+  <script src="remote.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -195,7 +195,7 @@ const server = http.createServer((req, res) => {
   }
 
   // Phục vụ file tĩnh: chỉ các file giao diện công khai (không lộ server.js, data/, .bat...)
-  const PUBLIC_FILES = new Set(['/index.html', '/app.js', '/styles.css', '/SUPABASE_SECURITY_RLS.sql']);
+  const PUBLIC_FILES = new Set(['/index.html', '/app.js', '/remote.js', '/config.js', '/styles.css', '/supabase_setup.sql']);
   const safePath = pathname === '/' ? '/index.html' : pathname;
 
   if (PUBLIC_FILES.has(safePath)) {

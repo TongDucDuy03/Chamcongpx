@@ -28,9 +28,19 @@
 
   const STORAGE_KEY = 'SMART_FACTORY_OVERTIME_V30_STATE';
   const DEVICE_WORKER_KEY = 'SMART_FACTORY_DEVICE_REMEMBERED_EMP_V30';
-  const SUPABASE_CONFIG_KEY = 'SMART_FACTORY_SUPABASE_CONFIG_V35';
   const AUTH_SESSION_KEY = 'SMART_FACTORY_AUTH_SESSION_V35';
   const CHANNEL_NAME = 'SMART_FACTORY_OVERTIME_SYNC_V30';
+
+  // Kết nối Supabase (điền trong config.js). Chưa điền thì app chạy chế độ thử, lưu trong trình duyệt.
+  const APP_CONFIG = (typeof window !== 'undefined' && window.APP_CONFIG) || {};
+  const REMOTE_MODE = Boolean(
+    String(APP_CONFIG.supabaseUrl || '').trim() && String(APP_CONFIG.supabaseKey || '').trim() && window.OTRemote
+  );
+  const remoteClient = REMOTE_MODE
+    ? window.OTRemote.createClient({ url: APP_CONFIG.supabaseUrl, key: APP_CONFIG.supabaseKey })
+    : null;
+  const REMOTE_SESSION_KEY = 'SMART_FACTORY_REMOTE_SESSION_V1';
+  const REMOTE_PENDING_KEY = 'SMART_FACTORY_REMOTE_PENDING_V1';
 
   /**
    * Hàm băm Salted Hash chống lộ khóa Admin & PIN nhân sự qua F12 trên GitHub Pages
@@ -63,72 +73,8 @@
   }
 
   function changeAdminPassword() {
-    const oldPwd = window.prompt('Nhập mật khẩu Admin hiện tại:');
-    if (oldPwd === null) return;
-    if (!isAdminPassword(oldPwd.trim())) {
-      showToast('Mật khẩu hiện tại chưa đúng.', 'error');
-      return;
-    }
-    const newPwd = (window.prompt('Nhập mật khẩu Admin mới (ít nhất 6 ký tự):') || '').trim();
-    if (newPwd.length < 6) {
-      showToast('Mật khẩu mới phải từ 6 ký tự trở lên, chưa đổi.', 'error');
-      return;
-    }
-    try {
-      localStorage.setItem(ADMIN_PWD_KEY, computeSaltedTokenDigest(newPwd));
-      showToast('Đã đổi mật khẩu Admin (áp dụng trên máy này).', 'success');
-    } catch (_) {
-      showToast('Không lưu được mật khẩu mới.', 'error');
-    }
+    openChangePasswordModal();
   }
-
-  /**
-   * Kịch bản SQL bảo mật Supabase PostgreSQL + Row Level Security (RLS) + Server Timestamp
-   */
-  const SUPABASE_RLS_SQL_SCRIPT = `-- ============================================================================
--- KỊCH BẢN BẢO MẬT SUPABASE (POSTGRESQL + ROW LEVEL SECURITY + SERVER TIMESTAMP)
--- Vá triệt để 3 tử huyệt khi chạy trên GitHub Pages 24/7:
---  1. Ẩn pin_hash & chặn sửa/xóa trái phép qua F12 bằng Row Level Security (RLS)
---  2. Chống nghẽn Race Condition khi 50 công nhân gửi đơn cùng lúc giờ tan ca
---  3. Ép dùng Giờ Chuẩn Server (DEFAULT now()) chống chỉnh lùi giờ điện thoại
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS public.employees (
-  id BIGSERIAL PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  default_overtime_type TEXT NOT NULL DEFAULT 'Ngoài khoán',
-  default_work_mode TEXT NOT NULL DEFAULT 'Tăng ca tại công ty',
-  pin_hash TEXT NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.overtime_records (
-  id TEXT PRIMARY KEY,
-  employee_name TEXT NOT NULL REFERENCES public.employees(name) ON UPDATE CASCADE,
-  job_content TEXT NOT NULL CHECK (char_length(trim(job_content)) > 0),
-  start_time TEXT NOT NULL DEFAULT '',
-  end_time TEXT NOT NULL DEFAULT '',
-  work_date TEXT NOT NULL DEFAULT '',
-  override_hours NUMERIC(5,2) NULL CHECK (override_hours IS NULL OR override_hours >= 0),
-  overtime_type TEXT NOT NULL DEFAULT 'Ngoài khoán',
-  work_mode TEXT NOT NULL DEFAULT 'Tăng ca tại công ty',
-  note TEXT NOT NULL DEFAULT '',
-  is_driver_no_time BOOLEAN NOT NULL DEFAULT FALSE,
-  server_created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.overtime_records ENABLE ROW LEVEL SECURITY;
-
--- Chỉ Admin có JWT hợp lệ (role = authenticated) mới được sửa/xóa bảng công & nhân sự
-CREATE POLICY "Admin full access on employees" ON public.employees
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
-CREATE POLICY "Public read overtime for overlap check" ON public.overtime_records
-  FOR SELECT TO anon, authenticated USING (true);
-
-CREATE POLICY "Admin manage overtime records" ON public.overtime_records
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);`;
 
   /**
    * 6 Dòng hướng dẫn gốc ở đầu Sheet 1 ("Chi tiết tăng ca") và Sheet 3 ("Hướng dẫn")
@@ -467,15 +413,6 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     lastServerAckReceipt: null,
     serverConnected: false,
     serverLanUrl: '',
-    supabaseUrl: '',
-    supabaseAnonKey: '',
-    adminJwtToken: '',
-    supabaseConfig: {
-      url: '',
-      anonKey: '',
-      adminJwt: '',
-      enabled: false
-    },
 
     // Bảo mật Giờ Chuẩn Server (Chống chỉnh lùi đồng hồ điện thoại & chống Spam)
     serverClockOffsetMs: 0,
@@ -630,7 +567,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     container.appendChild(el);
     setTimeout(() => {
       if (el.parentNode) el.parentNode.removeChild(el);
-    }, 4200);
+    }, level === 'error' || level === 'warn' ? 6500 : 4200);
   }
 
   function escapeHtml(str) {
@@ -639,7 +576,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ==========================================================================
@@ -853,7 +791,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   }
 
   function ensureEmployeeCredentials(empList) {
-    if (!Array.isArray(empList)) return;
+    if (REMOTE_MODE || !Array.isArray(empList)) return;
     empList.forEach((emp) => {
       const defMatch = DEFAULT_EMPLOYEES.find((d) => d.name === emp.name);
       if (!emp.username) {
@@ -942,11 +880,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       if (isRest) {
         shortParts.push(`${hClean}h`);
       } else if (startHour < 10) {
-        shortParts.push(`S:${hClean}h`);
+        shortParts.push(`Sáng ${hClean}h`);
       } else if (r.workMode === 'Tăng ca trưa' || (startHour >= 10 && startHour < 14)) {
-        shortParts.push(`Tr:${hClean}h`);
+        shortParts.push(`Trưa ${hClean}h`);
       } else {
-        shortParts.push(`T:${hClean}h`);
+        shortParts.push(`Tối ${hClean}h`);
       }
       detailParts.push(`${sHm}-${eHm} (${hClean}h)`);
     });
@@ -993,7 +931,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         state.lockedDays[d].locked = true;
       }
     });
-    if (Object.keys(state.lockedDays).length === 0) {
+    if (!REMOTE_MODE && Object.keys(state.lockedDays).length === 0) {
       ['12/10/2026', '13/10/2026', '14/10/2026', '15/10/2026'].forEach((d) => {
         state.lockedDays[d] = {
           locked: true,
@@ -1144,22 +1082,21 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   }
 
   function loadLocalState() {
+    if (REMOTE_MODE) {
+      // Dùng Supabase: dữ liệu luôn lấy từ máy chủ sau khi đăng nhập, không đọc dữ liệu cũ trong trình duyệt
+      state.employees = [];
+      state.records = [];
+      state.offlineQueue = [];
+      state.lockedDays = {};
+      state.dayModAlerts = {};
+      state.holidays = {};
+      return;
+    }
     try {
       const savedEmp = localStorage.getItem(DEVICE_WORKER_KEY);
       if (savedEmp) {
         state.selectedEmployeeName = savedEmp;
         state.loginTargetAccount = savedEmp;
-      }
-      const supaRaw = localStorage.getItem(SUPABASE_CONFIG_KEY);
-      if (supaRaw) {
-        const supaCfg = JSON.parse(supaRaw);
-        const url = supaCfg.supabaseUrl || supaCfg.url || '';
-        const anonKey = supaCfg.supabaseAnonKey || supaCfg.anonKey || '';
-        state.supabaseUrl = url;
-        state.supabaseAnonKey = anonKey;
-        state.supabaseConfig.url = url;
-        state.supabaseConfig.anonKey = anonKey;
-        state.supabaseConfig.enabled = Boolean(url && anonKey);
       }
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -1250,7 +1187,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     } catch (_) {}
   }
 
-  function logoutCurrentUser() {
+  async function logoutCurrentUser() {
+    if (REMOTE_MODE) await remoteLogoutCleanup();
     state.authRole = null;
     state.loggedInEmployeeName = null;
     state.adminUnlocked = false;
@@ -1267,6 +1205,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   }
 
   function saveLocalState(broadcast = true) {
+    if (REMOTE_MODE) return;
     try {
       const payload = {
         employees: state.employees,
@@ -1279,13 +1218,6 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       localStorage.setItem(DEVICE_WORKER_KEY, state.selectedEmployeeName);
-      localStorage.setItem(
-        SUPABASE_CONFIG_KEY,
-        JSON.stringify({
-          supabaseUrl: state.supabaseUrl,
-          supabaseAnonKey: state.supabaseAnonKey
-        })
-      );
       if (broadcast && syncChannel) {
         syncChannel.postMessage({ type: 'STATE_UPDATED', payload });
       }
@@ -1293,80 +1225,13 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   }
 
   async function syncWithCentralServer(pushLocalChanges = false) {
+    if (REMOTE_MODE) {
+      return pushLocalChanges ? remotePush() : remoteSyncPull({});
+    }
     if (state.simulateOffline) {
       state.serverConnected = false;
       updateSyncStatusUI();
       return;
-    }
-
-    if (state.supabaseUrl && state.supabaseAnonKey) {
-      try {
-        const cleanUrl = state.supabaseUrl.replace(/\/+$/, '');
-        const headers = {
-          apikey: state.supabaseAnonKey,
-          Authorization: `Bearer ${state.adminJwtToken || state.supabaseAnonKey}`,
-          'Content-Type': 'application/json'
-        };
-        if (pushLocalChanges) {
-          const res = await fetch(`${cleanUrl}/rest/v1/overtime_records`, {
-            method: 'POST',
-            headers: { ...headers, Prefer: 'resolution=merge-duplicates' },
-            body: JSON.stringify(
-              state.records.map((r) => ({
-                id: r.id,
-                employee_name: r.employeeName,
-                job_content: r.jobContent,
-                start_time: r.startTime || '',
-                end_time: r.endTime || '',
-                work_date: r.workDate || '',
-                override_hours: r.overrideHours,
-                overtime_type: r.overtimeType,
-                work_mode: r.workMode,
-                note: r.note || '',
-                is_driver_no_time: false
-              }))
-            )
-          });
-          const dateHdr = res.headers.get('date');
-          if (dateHdr) {
-            state.serverClockOffsetMs = new Date(dateHdr).getTime() - Date.now();
-          }
-          if (res.ok) state.serverConnected = true;
-        } else {
-          const res = await fetch(`${cleanUrl}/rest/v1/overtime_records?select=*&order=server_created_at.desc`, {
-            headers
-          });
-          const dateHdr = res.headers.get('date');
-          if (dateHdr) {
-            state.serverClockOffsetMs = new Date(dateHdr).getTime() - Date.now();
-          }
-          if (res.ok) {
-            const rows = await res.json();
-            state.serverConnected = true;
-            if (Array.isArray(rows) && rows.length > 0) {
-              state.records = rows
-                .filter((row) => !row.is_driver_no_time)
-                .map((row) => ({
-                  id: row.id,
-                  employeeName: row.employee_name,
-                  jobContent: row.job_content,
-                  startTime: row.start_time || '',
-                  endTime: row.end_time || '',
-                  workDate: row.work_date || '',
-                  overrideHours: row.override_hours,
-                  overtimeType: row.overtime_type || 'Ngoài khoán',
-                  workMode: row.work_mode || 'Tăng ca tại công ty',
-                  note: row.note || '',
-                  isDriverNoTime: false,
-                  receiptId: `ACK_${String(row.id).slice(-6).toUpperCase()}`,
-                  serverTimestamp: row.server_created_at || ''
-                }));
-              saveLocalState(false);
-              renderAll();
-            }
-          }
-        }
-      } catch (_) {}
     }
 
     if (window.location.protocol !== 'file:') {
@@ -1438,6 +1303,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
    * và cấp mã xác nhận Server ACK để công nhân yên tâm tắt màn hình
    */
   function flushOfflineQueue() {
+    if (REMOTE_MODE) {
+      remoteFlushPending();
+      return;
+    }
     if (state.offlineQueue.length === 0 && !state.simulateOffline) {
       showToast('Mọi đơn tăng ca đều đã nhận mã xác nhận Server ACK trên Cloud!', 'success');
       return;
@@ -1480,53 +1349,6 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     );
   }
 
-  /**
-   * Công cụ Di chuyển Dữ liệu 1 Chạm (One-Click Cloud Migration) từ máy Sếp lên Cloud DB
-   */
-  function runOneClickCloudMigration() {
-    const bar = document.getElementById('migrationProgressBar');
-    const logEl = document.getElementById('migrationLogText');
-    const badgeEl = document.getElementById('migrationStatusBadge');
-
-    if (bar) bar.style.width = '25%';
-    if (badgeEl) {
-      badgeEl.textContent = '⏳ Đang đẩy lên Cloud...';
-      badgeEl.style.background = '#fef3c7';
-      badgeEl.style.color = '#92400e';
-    }
-    if (logEl) {
-      logEl.innerHTML = 'Bước 1/3: Đang mã hóa SHA-256 PIN 9 nhân viên &amp; kiểm tra Supabase RLS...';
-    }
-
-    setTimeout(() => {
-      if (bar) bar.style.width = '68%';
-      if (logEl) {
-        logEl.innerHTML = `Bước 2/3: Đang đồng bộ ${state.employees.length} nhân viên và ${state.records.length} bản ghi tăng ca từ máy Sếp lên Cloud...`;
-      }
-    }, 350);
-
-    setTimeout(() => {
-      syncWithCentralServer(true);
-      const srvNow = getAuthoritativeServerDate();
-      const srvStr = `${pad2(srvNow.getDate())}/${pad2(srvNow.getMonth() + 1)}/${srvNow.getFullYear()} ${pad2(srvNow.getHours())}:${pad2(srvNow.getMinutes())}:${pad2(srvNow.getSeconds())}`;
-
-      if (bar) bar.style.width = '100%';
-      if (badgeEl) {
-        badgeEl.textContent = 'Đã đồng bộ Cloud 100%';
-        badgeEl.style.background = '#d1fae5';
-        badgeEl.style.color = '#065f46';
-      }
-      if (logEl) {
-        logEl.innerHTML = `Hoàn tất lúc <strong>${srvStr} (Giờ Server)</strong>: Đã đẩy <strong>${state.employees.length} NV</strong> (Băm SHA-256) &amp; <strong>${state.records.length} ca tăng ca</strong> lên Cloud DB!`;
-      }
-      playFeedbackSound('SUCCESS');
-      showToast(
-        `<strong>Migration 1 Chạm Thành Công!</strong> Toàn bộ ${state.employees.length} nhân viên và ${state.records.length} dòng lịch sử tăng ca từ máy Sếp đã lên Cloud Database, sẵn sàng cho GitHub Pages 24/7!`,
-        'success'
-      );
-    }, 850);
-  }
-
   function updateSyncStatusUI() {
     const pill = document.getElementById('syncStatusPill');
     const text = document.getElementById('syncStatusText');
@@ -1543,17 +1365,13 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const btnSubmitText = document.getElementById('btnSubmitMobileText');
     const migEmpLabel = document.getElementById('migEmpCountLabel');
     const migRecLabel = document.getElementById('migRecCountLabel');
-    const sqlBox = document.getElementById('sqlRlsPreviewBox');
 
-    const qLen = state.offlineQueue.length;
+    const qLen = pendingCount();
 
     if (pendingCountEl) pendingCountEl.textContent = String(qLen);
     if (deployOfflineBadge) deployOfflineBadge.textContent = `${qLen} bản ghi chờ`;
     if (migEmpLabel) migEmpLabel.textContent = String(state.employees.length);
     if (migRecLabel) migRecLabel.textContent = String(state.records.length);
-    if (sqlBox && sqlBox.textContent.includes('Đang tải')) {
-      sqlBox.textContent = SUPABASE_RLS_SQL_SCRIPT;
-    }
 
     if (tabBadge) {
       if (qLen > 0) {
@@ -1608,18 +1426,20 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       }
     } else {
       if (pill) pill.classList.remove('offline');
-      const modeLabel =
-        state.supabaseUrl && state.supabaseAnonKey
-          ? 'Cloud trực tuyến'
-          : state.serverConnected
+      const modeLabel = REMOTE_MODE
+        ? state.serverConnected
           ? 'Đã kết nối'
-          : 'Sẵn sàng';
+          : 'Mất kết nối'
+        : state.serverConnected
+        ? 'Đã kết nối'
+        : 'Sẵn sàng';
       if (text) text.textContent = qLen > 0 ? `${modeLabel} (${qLen} chờ)` : modeLabel;
       if (phoneBadge) {
         phoneBadge.className = 'phone-network-badge';
         phoneBadge.textContent = 'Trực tuyến';
       }
     }
+    renderCloudStatus();
   }
 
   // ==========================================================================
@@ -2214,23 +2034,6 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     }
   }
 
-  function promptChangeWorkerPassword(emp) {
-    const newPwd = window.prompt(
-      'Bạn đang dùng mật khẩu mặc định. Nhập mật khẩu mới (ít nhất 4 ký tự), hoặc bấm Hủy để đổi sau:'
-    );
-    if (newPwd === null) return;
-    const trimmed = newPwd.trim();
-    if (trimmed.length < 4 || trimmed === '123456') {
-      showToast('Mật khẩu mới phải từ 4 ký tự và khác mật khẩu mặc định. Chưa đổi.', 'warn');
-      return;
-    }
-    emp.password = trimmed;
-    emp.pin = trimmed;
-    saveLocalState(true);
-    syncWithCentralServer(true);
-    showToast('Đã đổi mật khẩu thành công.', 'success');
-  }
-
   function attemptLoginSubmit(ev) {
     if (ev && typeof ev.preventDefault === 'function') {
       ev.preventDefault();
@@ -2262,6 +2065,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       }
       pwdInp?.focus();
       playFeedbackSound('ERROR');
+      return;
+    }
+
+    if (REMOTE_MODE) {
+      attemptRemoteLogin(rawUsername, rawPassword, errEl);
       return;
     }
 
@@ -2348,7 +2156,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       renderAll();
       showToast(`Xin chào ${escapeHtml(emp.name)}.`, 'success');
       if (rawPassword === '123456') {
-        setTimeout(() => promptChangeWorkerPassword(emp), 500);
+        setTimeout(() => openChangePasswordModal({ forced: true, oldPassword: rawPassword }), 500);
       }
     } else {
       playFeedbackSound('ERROR');
@@ -2472,7 +2280,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       (s) => `${s.slotLabel} ${formatHoursClean(s.estHours)}h (${s.startHm}→${s.endHm})`
     );
     const slotsSummaryText =
-      summaryParts.length > 0 ? summaryParts.join(' • ') : 'Chưa chọn ca tăng ca nào (Chỉ làm công hành chính X)';
+      summaryParts.length > 0 ? summaryParts.join(' • ') : 'Chưa chọn ca nào';
 
     const result = {
       isoDate,
@@ -2804,6 +2612,14 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         : 'Không tăng ca tối';
     }
 
+    // Ngày dạng chữ (tránh nhầm khi máy hiển thị kiểu tháng/ngày)
+    const humanEl = document.getElementById('mobileDateHuman');
+    if (humanEl && daily.isoDate) {
+      const dn = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+      const dd = new Date(`${daily.isoDate}T00:00:00`);
+      humanEl.textContent = isNaN(dd.getTime()) ? '' : `${dn[dd.getDay()]}, ${daily.workDate}`;
+    }
+
     // Cập nhật huy hiệu Ký hiệu công ngày (X+4)
     const dayCodeBadge = document.getElementById('mobileDayCodeBadge');
     if (dayCodeBadge) {
@@ -2949,6 +2765,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     } catch (_) {}
     setVal('mobileJobContent', lastJob);
     setVal('mobileNoteInput', '');
+    const detailsEl = document.getElementById('slotDetails');
+    if (detailsEl) detailsEl.open = false;
     syncJobChipsToInput();
 
     state.formReturnTab = null;
@@ -2977,6 +2795,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       window.history.pushState({ otEdit: 1 }, '');
     } catch (_) {}
     loadExistingDayIntoMobileForm(empName, iso, false);
+    const detailsOpen = document.getElementById('slotDetails');
+    if (detailsOpen) detailsOpen.open = true; // đang sửa thì mở sẵn phần chỉnh giờ
     renderAll();
     window.scrollTo({ top: 0 });
   }
@@ -3016,7 +2836,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     state.offlineQueue = state.offlineQueue.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
     if (locked) checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
     saveLocalState(true);
-    await syncWithCentralServer(true);
+    const delRes = await syncWithCentralServer(true);
+    if (delRes && delRes.rejected) return false;
     showToast(`Đã xóa báo tăng ca ngày <strong>${escapeHtml(vnDate)}</strong>.`, 'success');
     return true;
   }
@@ -3171,8 +2992,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         }
 
         saveLocalState(true);
-        await syncWithCentralServer(true);
+        const shiftRes = await syncWithCentralServer(true);
         renderAll();
+        if (shiftRes && shiftRes.rejected) return;
 
         if (isLocked) {
           showToast(
@@ -3194,9 +3016,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   // BẢNG CÔNG THÁNG CỦA CÔNG NHÂN (X, X+1, X+4... theo từng ngày)
   // ==========================================================================
 
+  /** Ngày hôm nay theo giờ Việt Nam, hiệu chỉnh theo đồng hồ máy chủ (không phụ thuộc đồng hồ điện thoại) */
   function localIsoToday() {
-    const d = new Date();
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    const t = new Date(Date.now() + (state.serverClockOffsetMs || 0) + 7 * 3600 * 1000);
+    return t.toISOString().slice(0, 10);
   }
 
   function renderWorkerCalendar() {
@@ -3370,7 +3193,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           checkAndTriggerPostLockAlert(activeWorkerName, daily.workDate, beforeSummary);
         }
         saveLocalState(true);
-        await syncWithCentralServer(true);
+        const emptyRes = await syncWithCentralServer(true);
+        if (emptyRes && emptyRes.rejected) {
+          renderAll();
+          return;
+        }
         playFeedbackSound('SUCCESS');
         clearEditHistoryFlag();
         resetWorkerForm();
@@ -3455,7 +3282,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       triggeredYellow = checkAndTriggerPostLockAlert(activeWorkerName, daily.workDate, beforeSummary);
     }
 
-    if (state.simulateOffline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    if (!REMOTE_MODE && (state.simulateOffline || (typeof navigator !== 'undefined' && navigator.onLine === false))) {
       state.isWaitingServerAck = true;
       await requestZaloScreenWakeLock();
       newValidatedRecords.forEach((r) => state.offlineQueue.unshift(r));
@@ -3474,17 +3301,25 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     updateSyncStatusUI();
 
     saveLocalState(true);
-    await syncWithCentralServer(true);
+    const syncRes = await syncWithCentralServer(true);
 
     state.isWaitingServerAck = false;
-    const latestRec = newValidatedRecords[0];
-    state.lastServerAckReceipt = {
-      receiptId: latestRec.receiptId,
-      employeeName: `${activeWorkerName} (${daily.codeLabel} • Ngày ${daily.workDate})`,
-      serverTimestamp: authoritativeServerStr
-    };
     releaseZaloScreenWakeLock();
-    playFeedbackSound('SUCCESS');
+    if (REMOTE_MODE && syncRes && syncRes.rejected) {
+      // Máy chủ từ chối (ví dụ trùng giờ trên thiết bị khác): giữ nguyên form để người dùng chỉnh lại
+      renderAll();
+      return;
+    }
+    const savedOffline = Boolean(REMOTE_MODE && syncRes && syncRes.queued);
+    const latestRec = newValidatedRecords[0];
+    state.lastServerAckReceipt = savedOffline
+      ? null
+      : {
+          receiptId: latestRec.receiptId,
+          employeeName: `${activeWorkerName} (${daily.codeLabel} • Ngày ${daily.workDate})`,
+          serverTimestamp: authoritativeServerStr
+        };
+    playFeedbackSound(savedOffline ? 'ERROR' : 'SUCCESS');
     try {
       localStorage.setItem(lastJobKey(activeWorkerName), jobText);
     } catch (_) {}
@@ -3496,7 +3331,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     renderAll();
     window.scrollTo({ top: 0 });
 
-    if (triggeredYellow) {
+    if (savedOffline) {
+      showToast(
+        `Chưa có mạng. Đã lưu tạm ngày <strong>${escapeHtml(daily.workDate)}</strong> trên điện thoại và sẽ tự gửi khi có mạng. Đừng xóa ứng dụng.`,
+        'warn'
+      );
+    } else if (triggeredYellow) {
       showToast(
         `Đã cập nhật ngày <strong>${escapeHtml(daily.workDate)}</strong> thành <strong>${escapeHtml(daily.codeLabel)}</strong>. Vì ngày này Quản đốc đã chốt công nên ô của bạn đã được <strong>bôi vàng</strong> để Quản đốc duyệt lại!`,
         'warn'
@@ -3638,6 +3478,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     if (!/^\d{4}-\d{2}$/.test(monthKey || '')) return;
     state.matrixMonth = monthKey;
     renderAll();
+    if (REMOTE_MODE && state.authRole === 'ADMIN') {
+      setAppLoading(true);
+      remoteSyncPull({ force: true }).then(() => setAppLoading(false));
+    }
   }
 
   function getFilteredAdminRecords() {
@@ -3663,6 +3507,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const monthRecords = state.records.filter((r) => isRecordInMonth(r, getSelectedMonthKey()));
     const totalBadge = document.getElementById('adminTotalBadge');
     if (totalBadge) totalBadge.textContent = `${monthRecords.length} dòng`;
+
+    const emptyHint = document.getElementById('adminEmptyHint');
+    if (emptyHint) emptyHint.style.display = state.employees.length === 0 ? 'block' : 'none';
 
     const lockScreen = document.getElementById('adminLockScreen');
     const dashContent = document.getElementById('adminDashboardContent');
@@ -3796,7 +3643,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Banner cảnh báo vàng nếu có công nhân sửa sau khi chốt
     const alertBanner = document.getElementById('matrixModifiedAlertBanner');
-    const alertDetail = document.getElementById('matrixModifiedAlertDetail');
+    const alertDetail = document.getElementById('matrixModifiedAlertText');
     const modEntries = Object.entries(state.dayModAlerts || {});
 
     if (alertBanner && alertDetail) {
@@ -4209,12 +4056,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           <td class="excel-row-num">${r}</td>
           <td style="font-weight: 800;">${escapeHtml(emp.name)}</td>
           <td class="cell-mono" style="text-align:center;color:var(--primary);font-weight:700;">${escapeHtml(emp.username || slugifyVietnamese(emp.name))}</td>
-          <td class="cell-mono" style="text-align:center;color:#047857;font-weight:700;">${escapeHtml(emp.password || emp.pin || '123456')}</td>
+          <td class="cell-mono" style="text-align:center;color:#047857;font-weight:700;">${REMOTE_MODE ? '••••••' : escapeHtml(emp.password || emp.pin || '123456')}</td>
           <td>${escapeHtml(emp.defaultOvertimeType)}</td>
           <td>${escapeHtml(emp.defaultWorkMode)}</td>
           <td style="text-align:center;font-weight:800;color:var(--primary);">${empRecs.length} ca (${formatHoursClean(totalHrs)}h)</td>
           <td style="text-align:center;">
-            <button type="button" class="action-btn" onclick="window.__openChangePinFromSheet2('${escapeHtml(emp.name)}')" style="padding:0.25rem 0.6rem;font-size:0.74rem;">
+            <button type="button" class="action-btn" onclick="window.__openChangePinFromSheet2()" style="padding:0.25rem 0.6rem;font-size:0.74rem;">
               Sửa TK / MK
             </button>
           </td>
@@ -4277,6 +4124,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
   // ==========================================================================
 
   function openAdminEditOvertimeModal(recordId = null) {
+    if (state.employees.length === 0) {
+      showToast('Hãy thêm nhân viên trước (nút "Nhân sự & Tài khoản").', 'warn');
+      return;
+    }
     const modal = document.getElementById('modalEditOvertime');
     const title = document.getElementById('editOtModalTitle');
     const idInput = document.getElementById('editOtRecordId');
@@ -4426,15 +4277,13 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     if (!container) return;
 
     container.innerHTML = `
-      <table class="excel-replica-table" style="font-size: 0.8rem;">
+      <table class="excel-replica-table emp-manage-table" style="font-size: 0.8rem;">
         <thead>
           <tr class="excel-table-header">
             <th>#</th>
-            <th>Tên nhân viên (Cột A)</th>
+            <th>Nhân viên</th>
             <th>Tên đăng nhập</th>
-            <th>Mật khẩu</th>
-            <th>Loại mặc định (Cột B)</th>
-            <th>Hình thức mặc định (Cột C)</th>
+            <th>Đặt mật khẩu mới</th>
             <th>Thao tác</th>
           </tr>
         </thead>
@@ -4468,13 +4317,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
                   type="text"
                   class="form-control cell-mono emp-password-inline-input"
                   data-name="${escapeHtml(e.name)}"
-                  value="${escapeHtml(e.password || e.pin || '123456')}"
-                  style="width:96px;padding:0.25rem 0.45rem;text-align:center;margin:0 auto;font-size:0.82rem;"
+                  value="${REMOTE_MODE ? '' : escapeHtml(e.password || e.pin || '123456')}"
+                  placeholder="${REMOTE_MODE ? 'Mật khẩu mới' : ''}"
+                  style="width:${REMOTE_MODE ? '118' : '96'}px;padding:0.25rem 0.45rem;text-align:center;margin:0 auto;font-size:0.82rem;"
                 />
               </td>
-              <td>${escapeHtml(e.defaultOvertimeType)}</td>
-              <td>${escapeHtml(e.defaultWorkMode)}</td>
-              <td style="text-align:center;white-space:nowrap;">
+              <td style="text-align:center;"><div class="emp-actions">
                 <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
                   Lưu
                 </button>
@@ -4484,11 +4332,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
                     : `<button type="button" class="action-btn btn-end-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Cho nghỉ việc</button>`
                 }
                 ${
-                  state.records.some((r) => r.employeeName === e.name)
+                  e.hasRecords || state.records.some((r) => r.employeeName === e.name)
                     ? ''
                     : `<button type="button" class="action-btn btn-remove-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Xóa</button>`
                 }
-              </td>
+              </div></td>
             </tr>
           `
             )
@@ -4518,7 +4366,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           showToast(`Tên đăng nhập "${escapeHtml(newUsername)}" đã được dùng cho ${escapeHtml(duplicateUser.name)}.`, 'error');
           return;
         }
-        if (newPassword.length < 4) {
+        if ((newPassword || !REMOTE_MODE) && newPassword.length < 4) {
           playFeedbackSound('ERROR');
           showToast('Mật khẩu phải có ít nhất 4 ký tự.', 'error');
           return;
@@ -4527,14 +4375,22 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         const empObj = state.employees.find((e) => e.name === target);
         if (empObj) {
           empObj.username = newUsername;
-          empObj.password = newPassword;
-          empObj.pin = newPassword;
+          if (newPassword) {
+            empObj.password = newPassword;
+            empObj.pin = newPassword;
+          }
           if (userEl) userEl.value = newUsername;
+          if (passEl && REMOTE_MODE) passEl.value = '';
           saveLocalState(true);
           syncWithCentralServer(true);
           playFeedbackSound('SUCCESS');
           renderAll();
-          showToast(`Đã lưu tài khoản (${escapeHtml(newUsername)} / ${escapeHtml(newPassword)}) cho ${escapeHtml(target)}.`, 'success');
+          showToast(
+            newPassword && !REMOTE_MODE
+              ? `Đã lưu tài khoản (${escapeHtml(newUsername)} / ${escapeHtml(newPassword)}) cho ${escapeHtml(target)}.`
+              : `Đã lưu tài khoản ${escapeHtml(newUsername)} cho ${escapeHtml(target)}${newPassword ? ' (đã đặt mật khẩu mới, nhân viên sẽ được nhắc đổi khi đăng nhập)' : ''}.`,
+            'success'
+          );
         }
       });
     });
@@ -4644,7 +4500,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     state.employees.push({
       name,
       username,
-      startDate: (startDateInput && startDateInput.value) || localIsoToday(),
+      startDate: (startDateInput && startDateInput.value) || null,
       password: finalPassword,
       pin: finalPassword,
       defaultOvertimeType: defType,
@@ -5130,8 +4986,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     document.getElementById('btnLockSelectedDay')?.addEventListener('click', () => {
       const lockDateInp = document.getElementById('matrixLockDateInput');
-      const isoVal = lockDateInp && lockDateInp.value ? lockDateInp.value : '2026-10-15';
+      const isoVal = lockDateInp && lockDateInp.value ? lockDateInp.value : localIsoToday();
       const vnDate = isoDateToVnDate(isoVal);
+      if (REMOTE_MODE && !isRecordInMonth({ workDate: vnDate }, getSelectedMonthKey())) {
+        showToast('Ngày này nằm ngoài tháng đang xem. Hãy chọn đúng tháng ở ô "Tháng" rồi chốt.', 'warn');
+        return;
+      }
       const isLocked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
       if (isLocked) {
         unlockAttendanceDay(vnDate);
@@ -5176,35 +5036,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     });
 
     document.getElementById('btnUnlockAdminPin')?.addEventListener('click', async () => {
-      const emailVal = (document.getElementById('adminAuthEmailInput')?.value || '').trim();
       const val = document.getElementById('adminPinInput')?.value || '';
       const err = document.getElementById('adminPinError');
-
-      if (state.supabaseConfig.url && state.supabaseConfig.anonKey && emailVal && val.length >= 6) {
-        try {
-          const authRes = await fetch(
-            `${state.supabaseConfig.url.replace(/\/+$/, '')}/auth/v1/token?grant_type=password`,
-            {
-              method: 'POST',
-              headers: {
-                apikey: state.supabaseConfig.anonKey,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ email: emailVal, password: val })
-            }
-          );
-          if (authRes.ok) {
-            const authData = await authRes.json();
-            state.supabaseConfig.adminJwt = authData.access_token || '';
-            state.adminJwtToken = state.supabaseConfig.adminJwt;
-            state.adminUnlocked = true;
-            if (err) err.style.display = 'none';
-            renderAdminDashboard();
-            showToast('Đã xác thực Quản trị viên thành công!', 'success');
-            return;
-          }
-        } catch (_) {}
-      }
 
       if (isAdminPassword(val)) {
         state.adminUnlocked = true;
@@ -5218,6 +5051,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     });
 
     document.getElementById('btnAdminSyncCloudNow')?.addEventListener('click', async () => {
+      if (REMOTE_MODE) {
+        const r = await remoteSyncPull({ force: true });
+        showToast(r && r.ok && !r.queued ? 'Đã tải dữ liệu mới nhất.' : 'Chưa kết nối được máy chủ.', r && r.ok && !r.queued ? 'success' : 'warn');
+        return;
+      }
       await syncWithCentralServer(true);
       showToast('Đã đồng bộ dữ liệu thành công!', 'success');
     });
@@ -5256,6 +5094,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Sao lưu & Nhập JSON
     document.getElementById('btnExportBackupJson')?.addEventListener('click', () => {
+      if (REMOTE_MODE) {
+        exportBackupRemote();
+        return;
+      }
       const dataStr = JSON.stringify(
         {
           employees: state.employees,
@@ -5272,7 +5114,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Backup_Tang_Ca_10_2026.json`;
+      a.download = `Backup_Tang_Ca_${localIsoToday()}.json`;
       a.click();
       URL.revokeObjectURL(url);
       showToast('Đã tải xuống file JSON sao lưu toàn bộ dữ liệu!', 'success');
@@ -5285,7 +5127,20 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       reader.onload = () => {
         try {
           const parsed = JSON.parse(String(reader.result));
-          if (Array.isArray(parsed.employees) && Array.isArray(parsed.records)) {
+          if (Array.isArray(parsed.employees) && Array.isArray(parsed.records) && REMOTE_MODE) {
+            const r = importBackupRemote(parsed);
+            saveLocalState(true);
+            renderAll();
+            syncWithCentralServer(true).then((res) => {
+              if (res && res.rejected) return; // máy chủ từ chối: đã báo lỗi và tải lại dữ liệu đúng
+              showToast(
+                res && res.queued
+                  ? 'Chưa có mạng. Đã lưu tạm dữ liệu nhập, sẽ tự gửi khi có mạng.'
+                  : `Đã nhập ${r.addedEmp} nhân viên mới và ${r.addedRec} ca tăng ca${r.skipped ? ` (bỏ qua ${r.skipped} ca của nhân viên không có trong danh sách)` : ''}. Nhân viên mới có mật khẩu như trong file, hoặc 123456 nếu file không có.`,
+                res && res.queued ? 'warn' : 'success'
+              );
+            });
+          } else if (Array.isArray(parsed.employees) && Array.isArray(parsed.records)) {
             state.employees = parsed.employees;
             ensureEmployeeCredentials(state.employees);
             state.records = parsed.records;
@@ -5362,63 +5217,696 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     document.getElementById('btnChangeAdminPwd')?.addEventListener('click', changeAdminPassword);
     document.getElementById('btnPrintQrPoster')?.addEventListener('click', () => window.print());
 
-    document.getElementById('btnSaveSupabaseConfig')?.addEventListener('click', async () => {
-      const urlVal = (document.getElementById('supabaseUrlInput')?.value || '').trim();
-      const keyVal = (document.getElementById('supabaseAnonKeyInput')?.value || '').trim();
-      state.supabaseUrl = urlVal;
-      state.supabaseAnonKey = keyVal;
-      state.supabaseConfig.url = urlVal;
-      state.supabaseConfig.anonKey = keyVal;
-      state.supabaseConfig.enabled = Boolean(urlVal && keyVal);
-      saveLocalState(false);
-      await syncWithCentralServer(true);
-      playFeedbackSound('SUCCESS');
-      showToast('Đã lưu cấu hình kết nối Cloud!', 'success');
-    });
 
-    document.getElementById('btnRunCloudMigration')?.addEventListener('click', () => {
-      runOneClickCloudMigration();
-    });
-
-    document.getElementById('btnCopySqlRls')?.addEventListener('click', () => {
-      navigator.clipboard?.writeText(SUPABASE_RLS_SQL_SCRIPT);
-      playFeedbackSound('SUCCESS');
-      showToast('Đã copy kịch bản SQL!', 'success');
-    });
-
-    document.getElementById('btnDownloadSqlRls')?.addEventListener('click', () => {
-      const blob = new Blob([SUPABASE_RLS_SQL_SCRIPT], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'SUPABASE_SECURITY_RLS.sql';
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast('⬇Đã tải xuống file SUPABASE_SECURITY_RLS.sql!', 'success');
-    });
   }
 
   // ==========================================================================
   // 13. KHỞI ĐỘNG HỆ THỐNG
   // ==========================================================================
 
+  // ==========================================================================
+  // KẾT NỐI SUPABASE: DỮ LIỆU DÙNG CHUNG CHO CẢ XƯỞNG
+  //  - Đăng nhập & dữ liệu nằm trên máy chủ, trình duyệt chỉ gọi các hàm app_* (xem supabase_setup.sql)
+  //  - Mỗi lần Lưu chỉ gửi đúng các dòng thay đổi (xem remote.js), nhiều người cùng báo không mất dữ liệu
+  //  - Mất mạng: thay đổi được giữ lại trên máy và tự gửi khi có mạng
+  // ==========================================================================
+
+  const remote = {
+    token: '',
+    role: '',
+    name: '',
+    snapshot: null, // ảnh chụp dữ liệu đã đồng bộ với máy chủ
+    queue: Promise.resolve(), // xếp hàng để gửi/tải không chạy chồng nhau
+    lastSig: '',
+    pendingCount: 0,
+    timer: null,
+    bound: false
+  };
+
+  function pendingCount() {
+    return REMOTE_MODE ? remote.pendingCount : state.offlineQueue.length;
+  }
+
+  function remoteQueue(fn) {
+    const run = remote.queue.then(fn, fn);
+    remote.queue = run.catch(() => {});
+    return run;
+  }
+
+  function setAppLoading(show) {
+    const el = document.getElementById('appLoadingOverlay');
+    if (el) el.style.display = show ? 'flex' : 'none';
+  }
+
+  function remoteApplyServerTime(iso) {
+    const t = Date.parse(iso || '');
+    if (!isNaN(t)) state.serverClockOffsetMs = t - Date.now();
+  }
+
+  // ---- Phiên đăng nhập: công nhân nhớ 30 ngày, quản trị viên chỉ trong lúc mở tab ----
+  function remoteReadSession() {
+    try {
+      const raw = sessionStorage.getItem(REMOTE_SESSION_KEY) || localStorage.getItem(REMOTE_SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      return s && s.token ? s : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function remoteSaveSession() {
+    try {
+      sessionStorage.removeItem(REMOTE_SESSION_KEY);
+      localStorage.removeItem(REMOTE_SESSION_KEY);
+      const payload = JSON.stringify({ token: remote.token, role: remote.role, name: remote.name });
+      (remote.role === 'admin' ? sessionStorage : localStorage).setItem(REMOTE_SESSION_KEY, payload);
+    } catch (_) {}
+  }
+
+  function remoteClearSession() {
+    try {
+      sessionStorage.removeItem(REMOTE_SESSION_KEY);
+      localStorage.removeItem(REMOTE_SESSION_KEY);
+    } catch (_) {}
+  }
+
+  // ---- Thay đổi chưa gửi được (mất mạng) được giữ lại trên máy ----
+  function remoteStorePending(ops) {
+    try {
+      if (!ops) {
+        localStorage.removeItem(REMOTE_PENDING_KEY);
+        return;
+      }
+      localStorage.setItem(REMOTE_PENDING_KEY, JSON.stringify({ user: remote.name, ops, savedAt: Date.now() }));
+    } catch (_) {}
+  }
+
+  function remoteClearData() {
+    state.employees = [];
+    state.records = [];
+    state.offlineQueue = [];
+    state.lockedDays = {};
+    state.dayModAlerts = {};
+    state.holidays = {};
+    remote.snapshot = null;
+    remote.lastSig = '';
+    remote.pendingCount = 0;
+  }
+
+  function remoteForceLogout(message) {
+    remoteStopPolling();
+    remote.token = '';
+    remote.role = '';
+    remote.name = '';
+    remoteClearSession();
+    remoteClearData();
+    state.authRole = null;
+    state.loggedInEmployeeName = null;
+    state.adminUnlocked = false;
+    state.activeMainTab = 'LOGIN';
+    setAppLoading(false);
+    renderAll();
+    showToast(escapeHtml(message || 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.'), 'warn');
+  }
+
+  function remoteWindowArgs() {
+    if (state.authRole !== 'ADMIN') return {};
+    const [y, m] = getSelectedMonthKey().split('-').map(Number);
+    const last = new Date(y, m, 0).getDate();
+    return { p_from: `${y}-${pad2(m)}-01`, p_to: `${y}-${pad2(m)}-${pad2(last)}` };
+  }
+
+  function mapServerEmployee(e) {
+    return {
+      name: e.name,
+      username: e.username,
+      defaultOvertimeType: e.defaultOvertimeType || 'Ngoài khoán',
+      defaultWorkMode: e.defaultWorkMode || 'Tăng ca tại công ty',
+      startDate: e.startDate || null,
+      endDate: e.endDate || null,
+      hasRecords: Boolean(e.hasRecords),
+      mustChangePassword: Boolean(e.mustChangePassword)
+    };
+  }
+
+  // ---- Tải dữ liệu từ máy chủ ----
+  async function remotePullInner(opts = {}) {
+    if (!remote.token) return { ok: false };
+    const res = await remoteClient.rpc('app_pull', Object.assign({ p_token: remote.token }, remoteWindowArgs()));
+    if (!res.ok) {
+      if (window.OTRemote.isRetryable(res)) {
+        state.serverConnected = false;
+        updateSyncStatusUI();
+        return { ok: false, network: true, message: res.message };
+      }
+      if (res.hint === 'unauthorized' || res.hint === 'inactive') {
+        remoteForceLogout(res.message);
+        return { ok: false, unauthorized: true, message: res.message };
+      }
+      return { ok: false, message: res.message };
+    }
+
+    const d = res.data || {};
+    remoteApplyServerTime(d.serverTime);
+    state.serverConnected = true;
+
+    // Đang có thay đổi chưa gửi: không ghi đè bằng dữ liệu tải về (sẽ gửi trước rồi tải lại sau)
+    if (
+      remote.snapshot &&
+      !opts.ignoreDirty &&
+      window.OTRemote.computeOps(remote.snapshot, state, state.authRole).count > 0
+    ) {
+      return { ok: true, deferred: true };
+    }
+
+    const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts]);
+    if (!opts.force && remote.snapshot && sig === remote.lastSig) {
+      return { ok: true, changed: false, data: d };
+    }
+    remote.lastSig = sig;
+    state.employees = (d.employees || []).map(mapServerEmployee);
+    state.records = (d.records || []).filter((r) => !r.isDriverNoTime);
+    state.holidays = d.holidays || {};
+    state.lockedDays = d.lockedDays || {};
+    Object.keys(state.lockedDays).forEach((k) => {
+      if (state.lockedDays[k] && typeof state.lockedDays[k] === 'object') state.lockedDays[k].locked = true;
+    });
+    state.dayModAlerts = d.dayModAlerts || {};
+    state.offlineQueue = [];
+    remote.snapshot = window.OTRemote.snapshotFromState(state, state.authRole);
+    return { ok: true, changed: true, data: d };
+  }
+
+  // ---- Gửi các thay đổi lên máy chủ ----
+  async function remoteHandleRejection(res) {
+    if (res.hint === 'unauthorized' || res.hint === 'inactive') {
+      remoteForceLogout(res.message);
+      return { ok: false, rejected: true, message: res.message, hint: res.hint };
+    }
+    playFeedbackSound('ERROR');
+    showToast(escapeHtml(res.message), 'error');
+    // Máy chủ từ chối: bỏ thay đổi vừa rồi và tải lại dữ liệu đúng từ máy chủ
+    await remotePullInner({ force: true, ignoreDirty: true });
+    renderAll();
+    return { ok: false, rejected: true, message: res.message, hint: res.hint };
+  }
+
+  async function remotePushInner() {
+    if (!remote.token || !remote.snapshot) return { ok: true, skipped: true };
+    const { ops, count, sentSnapshot, passwords } = window.OTRemote.computeOps(
+      remote.snapshot,
+      state,
+      state.authRole
+    );
+    if (count === 0) {
+      remoteStorePending(null);
+      remote.pendingCount = 0;
+      updateSyncStatusUI();
+      return { ok: true, empty: true };
+    }
+
+    const receipts = {};
+    for (const chunk of window.OTRemote.chunkOps(ops, 200)) {
+      const res = await remoteClient.rpc('app_push', { p_token: remote.token, p_ops: chunk });
+      if (!res.ok) {
+        if (window.OTRemote.isRetryable(res)) {
+          // Mạng yếu: giữ thay đổi trên máy, tự gửi lại khi có mạng
+          remoteStorePending(ops);
+          remote.pendingCount = count;
+          state.serverConnected = false;
+          updateSyncStatusUI();
+          return { ok: false, queued: true, message: res.message };
+        }
+        return remoteHandleRejection(res);
+      }
+      remoteApplyServerTime(res.data && res.data.serverTime);
+      Object.assign(receipts, (res.data && res.data.receipts) || {});
+    }
+
+    remote.snapshot = sentSnapshot;
+    state.records.forEach((r) => {
+      if (receipts[r.id]) r.receiptId = receipts[r.id];
+    });
+    // Mật khẩu mới đã gửi xong thì xóa khỏi bộ nhớ trình duyệt
+    state.employees.forEach((e) => {
+      if (passwords[e.name] && e.password === passwords[e.name]) {
+        delete e.password;
+        delete e.pin;
+      }
+    });
+    remoteStorePending(null);
+    remote.pendingCount = 0;
+    state.serverConnected = true;
+    updateSyncStatusUI();
+    return { ok: true, receipts };
+  }
+
+  function remotePush() {
+    return remoteQueue(remotePushInner);
+  }
+
+  /** Gửi các thay đổi còn kẹt (nếu có) rồi tải dữ liệu mới nhất. */
+  function remoteSyncPull(opts) {
+    return remoteQueue(async () => {
+      if (!remote.token) return { ok: false };
+      if (remote.snapshot) {
+        const p = await remotePushInner();
+        if (p && (p.queued || p.rejected)) return p;
+      }
+      const r = await remotePullInner(opts || {});
+      if (r.ok && r.changed) renderAll();
+      else updateSyncStatusUI();
+      return r;
+    });
+  }
+
+  /** Gửi lại các thay đổi đã lưu tạm từ lần mất mạng trước (chạy ngay sau khi đăng nhập). */
+  async function remoteReplayPending() {
+    let stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(REMOTE_PENDING_KEY) || 'null');
+    } catch (_) {}
+    if (!stored || !stored.ops || stored.user !== remote.name) return { ok: true, none: true };
+    for (const chunk of window.OTRemote.chunkOps(stored.ops, 200)) {
+      const res = await remoteClient.rpc('app_push', { p_token: remote.token, p_ops: chunk });
+      if (!res.ok) {
+        if (window.OTRemote.isRetryable(res)) return { ok: false, network: true, message: res.message };
+        remoteStorePending(null);
+        showToast('Một số thay đổi lưu tạm không gửi được: ' + escapeHtml(res.message), 'error');
+        return { ok: true, dropped: true };
+      }
+    }
+    remoteStorePending(null);
+    showToast('Đã gửi các thay đổi lưu tạm lúc mất mạng.', 'success');
+    return { ok: true, sent: true };
+  }
+
+  async function remoteFlushPending() {
+    const r = await remoteSyncPull({ force: true });
+    if (r && r.ok && !r.queued) {
+      playFeedbackSound('SUCCESS');
+      showToast('Đã gửi xong, dữ liệu đã lên máy chủ.', 'success');
+    } else {
+      showToast('Vẫn chưa có mạng. Dữ liệu vẫn được giữ trên máy, đừng lo.', 'warn');
+    }
+  }
+
+  // ---- Tự làm mới: quản trị viên thấy ca mới của công nhân mà không cần tải lại trang ----
+  function remoteUserBusy() {
+    if (state.isWaitingServerAck) return true;
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest('#viewAdminExcel.active, .modal-backdrop.open')) return true;
+    return Boolean(document.querySelector('.modal-backdrop.open'));
+  }
+
+  async function remotePoll(force) {
+    if (!remote.token || document.visibilityState === 'hidden') return;
+    if (!force && remoteUserBusy()) return;
+    await remoteSyncPull({});
+  }
+
+  function remoteStopPolling() {
+    if (remote.timer) {
+      clearInterval(remote.timer);
+      remote.timer = null;
+    }
+  }
+
+  function remoteStartPolling() {
+    if (!remote.bound) {
+      remote.bound = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') remotePoll(false);
+      });
+      window.addEventListener('online', () => remotePoll(true));
+    }
+    remoteStopPolling();
+    remote.timer = setInterval(remotePoll, state.authRole === 'ADMIN' ? 30000 : 60000);
+  }
+
+  // ---- Đăng nhập / khôi phục phiên / đăng xuất ----
+  async function remoteLoadAfterAuth() {
+    return remoteQueue(async () => {
+      const rp = await remoteReplayPending();
+      if (!rp.ok) return rp;
+      return remotePullInner({ force: true, ignoreDirty: true });
+    });
+  }
+
+  async function attemptRemoteLogin(username, password, errEl) {
+    const btn = document.getElementById('btnSubmitLogin');
+    const showErr = (msg) => {
+      if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+      }
+      playFeedbackSound('ERROR');
+    };
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Đang đăng nhập...';
+    }
+    try {
+      const res = await remoteClient.rpc('app_login', { p_username: username, p_password: password });
+      if (!res.ok) {
+        showErr(res.message);
+        return;
+      }
+      const d = res.data || {};
+      if (!d.ok) {
+        showErr(d.message || 'Đăng nhập chưa thành công.');
+        return;
+      }
+
+      remote.token = d.token;
+      remote.role = d.role;
+      remote.name = d.name;
+      remote.snapshot = null;
+      remote.lastSig = '';
+      state.authRole = d.role === 'admin' ? 'ADMIN' : 'WORKER';
+      state.loggedInEmployeeName = d.role === 'admin' ? null : d.name;
+      if (d.role !== 'admin') state.selectedEmployeeName = d.name;
+      state.adminUnlocked = d.role === 'admin';
+
+      const loaded = await remoteLoadAfterAuth();
+      if (!loaded.ok) {
+        remote.token = '';
+        remote.role = '';
+        remote.name = '';
+        remoteClearData();
+        state.authRole = null;
+        state.loggedInEmployeeName = null;
+        state.adminUnlocked = false;
+        showErr(loaded.message || 'Không tải được dữ liệu. Vui lòng thử lại.');
+        return;
+      }
+
+      remoteSaveSession();
+      try {
+        localStorage.setItem(LAST_LOGIN_USER_KEY, username);
+      } catch (_) {}
+      const pwdInp = document.getElementById('loginPasswordInput');
+      if (pwdInp) pwdInp.value = '';
+      if (errEl) errEl.style.display = 'none';
+      resetWorkerForm();
+      state.workerMobileSubTab = 'FORM';
+      state.lastServerAckReceipt = null;
+      state.activeMainTab = d.role === 'admin' ? 'ADMIN_EXCEL' : 'WORKER_MOBILE';
+      remoteStartPolling();
+      playFeedbackSound('SUCCESS');
+      renderAll();
+      showToast(
+        d.role === 'admin' ? 'Đã đăng nhập Quản trị viên.' : `Xin chào ${escapeHtml(d.name)}.`,
+        'success'
+      );
+      if (d.mustChangePassword) {
+        setTimeout(() => openChangePasswordModal({ forced: true, oldPassword: password }), 400);
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Đăng nhập';
+      }
+    }
+  }
+
+  async function remoteRestoreSession() {
+    const saved = remoteReadSession();
+    if (!saved) return;
+    remote.token = saved.token;
+    remote.role = saved.role;
+    remote.name = saved.name || '';
+    state.authRole = saved.role === 'admin' ? 'ADMIN' : 'WORKER';
+    state.loggedInEmployeeName = saved.role === 'admin' ? null : remote.name;
+    if (saved.role !== 'admin') state.selectedEmployeeName = remote.name;
+    state.adminUnlocked = saved.role === 'admin';
+
+    setAppLoading(true);
+    const loaded = await remoteLoadAfterAuth();
+    setAppLoading(false);
+
+    if (!loaded.ok) {
+      if (!loaded.unauthorized) {
+        // Mất mạng lúc mở trang: giữ phiên để lần sau thử lại
+        remote.token = '';
+        state.authRole = null;
+        state.loggedInEmployeeName = null;
+        state.adminUnlocked = false;
+        renderAll();
+        showToast(escapeHtml(loaded.message || 'Không kết nối được máy chủ. Hãy kiểm tra mạng rồi tải lại trang.'), 'warn');
+      }
+      return;
+    }
+    resetWorkerForm();
+    state.activeMainTab = saved.role === 'admin' ? 'ADMIN_EXCEL' : 'WORKER_MOBILE';
+    remoteStartPolling();
+    renderAll();
+  }
+
+  async function remoteLogoutCleanup() {
+    const token = remote.token;
+    if (token) {
+      try {
+        await Promise.race([remotePush(), new Promise((resolve) => setTimeout(resolve, 3000))]);
+      } catch (_) {}
+    }
+    remoteStopPolling();
+    remote.token = '';
+    remote.role = '';
+    remote.name = '';
+    remoteClearSession();
+    remoteClearData();
+    if (token) remoteClient.rpc('app_logout', { p_token: token });
+  }
+
+  // ---- Đổi mật khẩu (dùng chung cho công nhân và quản trị viên) ----
+  function openChangePasswordModal(opts = {}) {
+    const modal = document.getElementById('modalChangePassword');
+    if (!modal) return;
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.value = v;
+    };
+    set('cpOld', opts.oldPassword || '');
+    set('cpNew', '');
+    set('cpNew2', '');
+    const err = document.getElementById('cpError');
+    if (err) err.style.display = 'none';
+    const hint = document.getElementById('changePwdHint');
+    if (hint) {
+      hint.style.display = opts.forced ? 'block' : 'none';
+      hint.textContent = 'Bạn đang dùng mật khẩu do quản đốc cấp. Hãy đặt mật khẩu riêng của bạn để người khác không dùng được tài khoản.';
+    }
+    const later = document.getElementById('btnCpLater');
+    if (later) later.style.display = opts.forced ? 'inline-flex' : 'none';
+    modal.classList.add('open');
+    setTimeout(() => document.getElementById(opts.oldPassword ? 'cpNew' : 'cpOld')?.focus(), 50);
+  }
+
+  function closeChangePasswordModal() {
+    document.getElementById('modalChangePassword')?.classList.remove('open');
+  }
+
+  async function submitChangePassword() {
+    const errEl = document.getElementById('cpError');
+    const showErr = (msg) => {
+      if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = 'block';
+      }
+      playFeedbackSound('ERROR');
+    };
+    const oldPwd = document.getElementById('cpOld')?.value || '';
+    const newPwd = document.getElementById('cpNew')?.value || '';
+    const again = document.getElementById('cpNew2')?.value || '';
+    const minLen = state.authRole === 'ADMIN' ? 6 : 4;
+
+    if (!oldPwd) return showErr('Vui lòng nhập mật khẩu hiện tại.');
+    if (newPwd.length < minLen) return showErr(`Mật khẩu mới phải có ít nhất ${minLen} ký tự.`);
+    if (newPwd !== again) return showErr('Hai lần nhập mật khẩu mới chưa giống nhau.');
+    if (newPwd === oldPwd) return showErr('Mật khẩu mới phải khác mật khẩu cũ.');
+
+    const btn = document.getElementById('btnCpSubmit');
+    if (btn) btn.disabled = true;
+    try {
+      if (REMOTE_MODE) {
+        const res = await remoteClient.rpc('app_change_password', {
+          p_token: remote.token,
+          p_old: oldPwd,
+          p_new: newPwd
+        });
+        if (!res.ok) return showErr(res.message);
+        if (!res.data || !res.data.ok) return showErr((res.data && res.data.message) || 'Chưa đổi được mật khẩu.');
+      } else if (state.authRole === 'ADMIN') {
+        if (!isAdminPassword(oldPwd)) return showErr('Mật khẩu hiện tại chưa đúng.');
+        try {
+          localStorage.setItem(ADMIN_PWD_KEY, computeSaltedTokenDigest(newPwd));
+        } catch (_) {
+          return showErr('Không lưu được mật khẩu mới trên máy này.');
+        }
+      } else {
+        const emp = state.employees.find((e) => e.name === (state.loggedInEmployeeName || state.selectedEmployeeName));
+        if (!emp) return showErr('Không tìm thấy tài khoản.');
+        if (oldPwd !== String(emp.password || emp.pin || '')) return showErr('Mật khẩu hiện tại chưa đúng.');
+        emp.password = newPwd;
+        emp.pin = newPwd;
+        saveLocalState(true);
+        syncWithCentralServer(true);
+      }
+      closeChangePasswordModal();
+      playFeedbackSound('SUCCESS');
+      showToast('Đã đổi mật khẩu thành công.', 'success');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ---- Khung trạng thái kết nối trong tab "Mã QR & Kết nối" ----
+  function renderCloudStatus() {
+    const badge = document.getElementById('cloudConnectionBadge');
+    const box = document.getElementById('cloudStatusText');
+    if (!badge && !box) return;
+    if (REMOTE_MODE) {
+      if (badge) badge.textContent = state.serverConnected ? 'Đã kết nối' : 'Mất kết nối';
+      if (box) {
+        box.innerHTML = state.serverConnected
+          ? '<strong>Đang dùng Supabase.</strong> Dữ liệu lưu trên máy chủ, công nhân báo ở đâu quản đốc cũng thấy ngay.'
+          : '<strong>Chưa kết nối được máy chủ.</strong> Hãy kiểm tra mạng. Dữ liệu vừa nhập được giữ trên máy và tự gửi khi có mạng.';
+      }
+    } else {
+      if (badge) badge.textContent = 'Chưa bật';
+      if (box) {
+        box.innerHTML =
+          '<strong>Đang chạy chế độ thử.</strong> Dữ liệu chỉ lưu trong trình duyệt của máy này, công nhân khác không thấy. Làm theo 4 bước dưới đây để bật dùng chung.';
+      }
+    }
+  }
+
+  async function fetchSetupSql() {
+    const res = await fetch('supabase_setup.sql', { cache: 'no-store' });
+    if (!res.ok) throw new Error('missing');
+    return res.text();
+  }
+
+  function bindRemoteEvents() {
+    document.getElementById('btnCpSubmit')?.addEventListener('click', submitChangePassword);
+    document.getElementById('btnCpLater')?.addEventListener('click', closeChangePasswordModal);
+    document.getElementById('btnCloseChangePwdModal')?.addEventListener('click', closeChangePasswordModal);
+    ['cpOld', 'cpNew', 'cpNew2'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') submitChangePassword();
+      });
+    });
+    document.getElementById('btnWorkerChangePwd')?.addEventListener('click', () => openChangePasswordModal());
+
+    document.getElementById('btnCopySqlRls')?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(await fetchSetupSql());
+        showToast('Đã sao chép file SQL. Dán vào Supabase, mục SQL Editor.', 'success');
+      } catch (_) {
+        showToast('Không sao chép được. Hãy bấm "Tải file SQL".', 'error');
+      }
+    });
+    document.getElementById('btnDownloadSqlRls')?.addEventListener('click', async () => {
+      try {
+        const blob = new Blob([await fetchSetupSql()], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'supabase_setup.sql';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      } catch (_) {
+        showToast('Không tải được file SQL.', 'error');
+      }
+    });
+  }
+
+  /** Sao lưu khi dùng Supabase: tải 400 ngày gần nhất từ máy chủ (không gồm mật khẩu). */
+  async function exportBackupRemote() {
+    const today = localIsoToday();
+    const res = await remoteClient.rpc('app_pull', {
+      p_token: remote.token,
+      p_from: addDaysToIsoDate(today, -400),
+      p_to: today
+    });
+    if (!res.ok || !res.data || !res.data.ok) {
+      showToast(escapeHtml((res && res.message) || 'Không lấy được dữ liệu để sao lưu.'), 'error');
+      return;
+    }
+    const d = res.data;
+    const payload = {
+      employees: (d.employees || []).map(mapServerEmployee),
+      records: d.records || [],
+      lockedDays: d.lockedDays || {},
+      dayModAlerts: d.dayModAlerts || {},
+      holidays: d.holidays || {},
+      range: d.window,
+      exportedAt: d.serverTime,
+      note: 'File sao lưu không chứa mật khẩu. Khi nhập lại, nhân viên mới có mật khẩu 123456 và phải đổi lần đầu đăng nhập.'
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Sao_luu_cham_cong_${today}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    showToast(`Đã tải file sao lưu (${payload.employees.length} nhân viên, ${payload.records.length} ca trong 400 ngày gần nhất).`, 'success');
+  }
+
+  /** Nhập file sao lưu khi đang dùng Supabase: chỉ THÊM nhân viên/ca chưa có, không xóa gì. */
+  function importBackupRemote(parsed) {
+    const have = new Set(state.employees.map((e) => e.name));
+    const usedUsernames = new Set(state.employees.map((e) => String(e.username || '').toLowerCase()));
+    let addedEmp = 0;
+    parsed.employees.forEach((e) => {
+      if (!e || !e.name || have.has(e.name)) return;
+      const pw = String(e.password || e.pin || '');
+      let username = String(e.username || slugifyVietnamese(e.name)).toLowerCase();
+      if (!/^[a-z0-9._-]{2,32}$/.test(username) || usedUsernames.has(username) || username === 'admin' || username === 'quantri') {
+        username = deriveDefaultUsername(e.name, usedUsernames);
+      }
+      usedUsernames.add(username);
+      state.employees.push({
+        name: e.name,
+        username,
+        password: pw.length >= 4 ? pw : '123456',
+        defaultOvertimeType: e.defaultOvertimeType || 'Ngoài khoán',
+        defaultWorkMode: e.defaultWorkMode || 'Tăng ca tại công ty',
+        startDate: e.startDate || null,
+        endDate: e.endDate || null
+      });
+      have.add(e.name);
+      addedEmp += 1;
+    });
+    const ids = new Set(state.records.map((r) => r.id));
+    let addedRec = 0;
+    let skipped = 0;
+    parsed.records.forEach((r) => {
+      if (!r || !r.id || !have.has(r.employeeName)) {
+        skipped += 1;
+        return;
+      }
+      if (ids.has(r.id)) return;
+      state.records.push(r);
+      ids.add(r.id);
+      addedRec += 1;
+    });
+    if (parsed.holidays && typeof parsed.holidays === 'object') {
+      Object.keys(parsed.holidays).forEach((k) => {
+        if (!state.holidays[k]) state.holidays[k] = parsed.holidays[k];
+      });
+    }
+    return { addedEmp, addedRec, skipped };
+  }
+
   function initApp() {
     loadLocalState();
 
-    // Đổ nội dung kịch bản SQL RLS vào hộp xem trước trong Trung tâm Deploy
-    const sqlBox = document.getElementById('sqlRlsPreviewBox');
-    if (sqlBox) {
-      sqlBox.textContent = SUPABASE_RLS_SQL_SCRIPT;
-    }
-
-    // Khởi tạo giá trị input Supabase nếu đã lưu trước đó
-    const sbUrlInput = document.getElementById('supabaseUrlInput');
-    const sbKeyInput = document.getElementById('supabaseAnonKeyInput');
-    if (sbUrlInput && state.supabaseConfig.url) sbUrlInput.value = state.supabaseConfig.url;
-    if (sbKeyInput && state.supabaseConfig.anonKey) sbKeyInput.value = state.supabaseConfig.anonKey;
-
     // Khởi tạo BroadcastChannel để đồng bộ tức thì giữa tab Điện thoại & tab Admin
-    if (typeof BroadcastChannel !== 'undefined') {
+    if (!REMOTE_MODE && typeof BroadcastChannel !== 'undefined') {
       try {
         syncChannel = new BroadcastChannel(CHANNEL_NAME);
         syncChannel.onmessage = (ev) => {
@@ -5439,13 +5927,18 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Lắng nghe sự kiện có mạng trở lại của trình duyệt trên điện thoại
     window.addEventListener('online', () => {
-      if (!state.simulateOffline && state.offlineQueue.length > 0) {
+      if (!REMOTE_MODE && !state.simulateOffline && state.offlineQueue.length > 0) {
         flushOfflineQueue();
       }
       updateSyncStatusUI();
     });
 
     bindAllEvents();
+    bindRemoteEvents();
+    if (REMOTE_MODE) {
+      const demoBtn = document.getElementById('btnDemoResetData');
+      if (demoBtn) demoBtn.style.display = 'none';
+    }
     resetWorkerForm();
     const lockDateInit = document.getElementById('matrixLockDateInput');
     if (lockDateInit) lockDateInit.value = localIsoToday();
@@ -5453,7 +5946,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     setInterval(updateLiveClock, 1000);
 
     renderAll();
-    syncWithCentralServer(false);
+    if (REMOTE_MODE) {
+      remoteRestoreSession();
+    } else {
+      syncWithCentralServer(false);
+    }
   }
 
   if (document.readyState === 'loading') {
