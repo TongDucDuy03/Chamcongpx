@@ -205,7 +205,7 @@
             </div>
 
             <!-- 2. CHỌN NHANH 1 CHẠM THEO KHUNG GIỜ LÀM TRONG NGÀY -->
-            <div class="form-section">
+            <div class="form-section normal-day-only">
               <div class="section-label-row">
                 <span class="section-label">2. Chọn nhanh ca làm việc trong ngày</span>
               </div>
@@ -238,7 +238,7 @@
             </div>
 
             <!-- 3. TÍCH CHỌN / CHỈNH GIỜ TỪNG BUỔI (SÁNG • TRƯA • TỐI) -->
-            <div class="form-section">
+            <div class="form-section normal-day-only">
               <div class="section-label-row">
                 <span class="section-label">3. Chi tiết các khung tăng ca trong ngày</span>
                 <span id="mobileEstHoursBadge" class="sub-meta-text">Tổng: 4.0 giờ</span>
@@ -333,6 +333,33 @@
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- NGÀY NGHỈ (CHỦ NHẬT / NGÀY LỄ): CHỈ BÁO NẾU CÓ ĐI LÀM, GHI THEO SỐ GIỜ THỰC TẾ -->
+            <div id="restDaySection" class="form-section rest-day-section" style="display: none;">
+              <div id="restDayBanner" class="rest-day-banner">Hôm nay là ngày nghỉ</div>
+              <label class="rest-work-check">
+                <input type="checkbox" id="restWorkCheck" />
+                <span>Tôi có đi làm ngày này</span>
+              </label>
+              <div id="restWorkBody" style="display: none;">
+                <div class="slot-quick-pills">
+                  <button type="button" class="slot-mini-btn" id="btnRestFull">Đủ ngày (8 giờ)</button>
+                  <button type="button" class="slot-mini-btn" id="btnRestHalf">Nửa ngày (4 giờ)</button>
+                </div>
+                <div class="slot-time-row">
+                  <div class="slot-time-field">
+                    <span>Từ</span>
+                    <input type="time" id="restStart" class="form-control slot-time-input" value="07:15" />
+                  </div>
+                  <span class="slot-time-arrow">→</span>
+                  <div class="slot-time-field">
+                    <span>Đến</span>
+                    <input type="time" id="restEnd" class="form-control slot-time-input" value="15:15" />
+                  </div>
+                </div>
+                <div id="restHoursLabel" class="rest-hours-label">Tổng: 8 giờ</div>
               </div>
             </div>
 
@@ -545,6 +572,9 @@
               <button type="button" id="btnAdminAddRecord" class="action-btn primary">
                 + Thêm dòng tăng ca
               </button>
+              <button type="button" id="btnOpenHolidays" class="action-btn">
+                Lịch nghỉ lễ
+              </button>
               <button type="button" id="btnOpenManageEmployees" class="action-btn">
                 Nhân sự &amp; Tài khoản
               </button>
@@ -608,6 +638,8 @@
             <!-- Thanh công cụ Chốt bảng công hàng ngày của Quản đốc -->
             <div class="matrix-toolbar">
               <div class="matrix-toolbar-left">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-main);">Tháng:</span>
+                <input type="month" id="matrixMonthInput" class="control-input" style="padding: 0.32rem 0.55rem;" />
                 <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-main);">Chốt bảng công ngày:</span>
                 <input type="date" id="matrixLockDateInput" class="control-input" value="2026-10-16" style="padding: 0.32rem 0.55rem;" />
                 <button type="button" id="btnLockSelectedDay" class="action-btn primary" style="padding: 0.36rem 0.75rem;">
@@ -1007,6 +1039,10 @@
               <input type="text" id="newEmpPin" class="form-control" value="123456" required />
             </div>
           </div>
+          <div class="form-group">
+            <label class="form-label" for="newEmpStartDate">Ngày vào làm (để trống = hôm nay)</label>
+            <input type="date" id="newEmpStartDate" class="form-control" />
+          </div>
           <div class="form-grid-2">
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label" for="newEmpDefaultType">Loại tăng ca mặc định</label>
@@ -1037,6 +1073,51 @@
       </div>
       <div class="modal-footer">
         <button type="button" id="btnDoneManageEmp" class="action-btn primary">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL LỊCH NGHỈ LỄ / NGÀY NGHỈ CHUNG (DÀNH CHO ADMIN)
+       ======================================================================== -->
+  <div id="modalHolidays" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="holidaysModalTitle">
+    <div class="modal-dialog wide">
+      <div class="modal-header">
+        <h3 id="holidaysModalTitle">Lịch nghỉ lễ, nghỉ Tết</h3>
+        <button type="button" id="btnCloseHolidaysModal" class="modal-close-btn" aria-label="Đóng">Đóng</button>
+      </div>
+      <div class="modal-body">
+        <div class="sub-meta-text" style="margin-bottom: 0.7rem;">
+          Ngày nghỉ lễ được xử lý như Chủ nhật: không tính công X, công nhân chỉ báo nếu có đi làm và ghi đúng số giờ làm (đủ ngày là 8 giờ).
+        </div>
+        <form id="formAddHoliday" style="background: #f8fafc; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.85rem; margin-bottom: 1rem;">
+          <div class="form-group">
+            <label class="form-label" for="holName">Tên ngày nghỉ</label>
+            <input type="text" id="holName" class="form-control" placeholder="VD: Nghỉ Tết Nguyên đán" />
+          </div>
+          <div class="form-grid-2">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="holFrom">Từ ngày</label>
+              <input type="date" id="holFrom" class="form-control" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="holTo">Đến ngày (để trống nếu chỉ 1 ngày)</label>
+              <input type="date" id="holTo" class="form-control" />
+            </div>
+          </div>
+          <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: space-between; align-items: center;">
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <input type="number" id="holYear" class="form-control" style="width: 90px;" min="2024" max="2100" />
+              <button type="button" id="btnLoadFixedHolidays" class="action-btn" title="Thêm 1/1, 30/4, 1/5, 2/9 của năm này">Thêm lễ cố định</button>
+            </div>
+            <button type="button" id="btnAddHoliday" class="action-btn primary">+ Thêm ngày nghỉ</button>
+          </div>
+          <div class="sub-meta-text" style="margin-top: 0.5rem;">Tết Nguyên đán và Giỗ Tổ Hùng Vương theo âm lịch nên bạn tự thêm bằng khoảng ngày ở trên.</div>
+        </form>
+        <div id="holidayListContainer" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btnDoneHolidays" class="action-btn primary">Xong</button>
       </div>
     </div>
   </div>

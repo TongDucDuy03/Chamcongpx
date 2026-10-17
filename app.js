@@ -446,6 +446,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     offlineQueue: [],
     lockedDays: {},
     dayModAlerts: {},
+    holidays: {}, // { 'dd/mm/yyyy': 'Tên ngày nghỉ' }
+    matrixMonth: '',
 
     // Trạng thái thiết bị điện thoại công nhân
     selectedEmployeeName: 'Tống Đức Duy',
@@ -746,6 +748,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         reason: 'Ngày tính công phải đúng định dạng dd/mm/yyyy (Ví dụ: 15/10/2026).'
       };
     }
+    if (!isEmployedOn(empObj, vnDateToIsoDate(workDate))) {
+      return {
+        ok: false,
+        reason: 'Nhân viên chưa vào làm hoặc đã nghỉ việc vào ngày này.'
+      };
+    }
     if (overrideHours !== null && (isNaN(overrideHours) || overrideHours < 0)) {
       return {
         ok: false,
@@ -876,6 +884,36 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     return Number.isInteger(n) ? String(n) : String(n);
   }
 
+  // ==========================================================================
+  // NGÀY NGHỈ (CHỦ NHẬT / LỄ) & TÌNH TRẠNG LÀM VIỆC CỦA NHÂN VIÊN
+  // ==========================================================================
+
+  function getHolidayName(workDateVn) {
+    return (state.holidays && state.holidays[workDateVn]) || '';
+  }
+
+  function isRestDayVn(workDateVn) {
+    if (!isValidVnDateOnly(workDateVn)) return false;
+    const iso = vnDateToIsoDate(workDateVn);
+    const dow = new Date(`${iso}T00:00:00`).getDay();
+    return dow === 0 || Boolean(getHolidayName(workDateVn));
+  }
+
+  function getRestDayLabel(workDateVn) {
+    return getHolidayName(workDateVn) || 'Chủ nhật';
+  }
+
+  function isEmployedOn(emp, iso) {
+    if (!emp) return true;
+    if (emp.startDate && iso < emp.startDate) return false;
+    if (emp.endDate && iso > emp.endDate) return false;
+    return true;
+  }
+
+  function isEmployeeCurrentlyActive(emp) {
+    return isEmployedOn(emp, localIsoToday());
+  }
+
   /**
    * Tổng hợp công của 1 nhân viên trong 1 ngày (`workDateVn` = `dd/mm/yyyy`)
    * Trả về: `{ records, totalHours, code: 'X+4', shortSlots: 'S:1h • Tr:2h • T:1h', detailStr }`
@@ -886,6 +924,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       .slice()
       .sort((a, b) => (parseVnDateTimeToMs(a.startTime) || 0) - (parseVnDateTimeToMs(b.startTime) || 0));
 
+    const isRest = isRestDayVn(workDateVn);
     let totalHours = 0;
     const shortParts = [];
     const detailParts = [];
@@ -898,7 +937,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       const startHour = Number(sHm.split(':')[0] || 0);
       const hClean = formatHoursClean(h);
 
-      if (startHour < 10) {
+      if (isRest) {
+        shortParts.push(`${hClean}h`);
+      } else if (startHour < 10) {
         shortParts.push(`S:${hClean}h`);
       } else if (r.workMode === 'Tăng ca trưa' || (startHour >= 10 && startHour < 14)) {
         shortParts.push(`Tr:${hClean}h`);
@@ -909,11 +950,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     });
 
     totalHours = Math.round(totalHours * 100) / 100;
-    const code = totalHours > 0 ? `X+${formatHoursClean(totalHours)}` : '';
-    const codeLabel = code || 'X';
+    const code = totalHours > 0 ? (isRest ? `${formatHoursClean(totalHours)}h` : `X+${formatHoursClean(totalHours)}`) : '';
+    const codeLabel = code || (isRest ? 'Nghỉ' : 'X');
     const shortSlots = shortParts.join(' • ');
 
     return {
+      isRest,
       records: allRecs,
       totalHours,
       code,
@@ -1139,6 +1181,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         if (parsed.dayModAlerts && typeof parsed.dayModAlerts === 'object') {
           state.dayModAlerts = parsed.dayModAlerts;
         }
+        if (parsed.holidays && typeof parsed.holidays === 'object') {
+          state.holidays = parsed.holidays;
+        }
       } else {
         state.employees = JSON.parse(JSON.stringify(DEFAULT_EMPLOYEES));
         state.records = JSON.parse(JSON.stringify(DEFAULT_OVERTIME_RECORDS));
@@ -1227,6 +1272,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         offlineQueue: state.offlineQueue,
         lockedDays: state.lockedDays,
         dayModAlerts: state.dayModAlerts,
+        holidays: state.holidays,
         updatedAt: Date.now()
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -1331,7 +1377,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
               employees: state.employees,
               records: state.records,
               lockedDays: state.lockedDays,
-              dayModAlerts: state.dayModAlerts
+              dayModAlerts: state.dayModAlerts,
+              holidays: state.holidays
             })
           });
           if (res.ok) {
@@ -1362,6 +1409,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
             }
             if (data.dayModAlerts && typeof data.dayModAlerts === 'object') {
               state.dayModAlerts = data.dayModAlerts;
+            }
+            if (data.holidays && typeof data.holidays === 'object') {
+              state.holidays = data.holidays;
             }
             ensureDefaultLockedDays();
             saveLocalState(false);
@@ -2149,6 +2199,23 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     }
   }
 
+  function promptChangeWorkerPassword(emp) {
+    const newPwd = window.prompt(
+      'Bạn đang dùng mật khẩu mặc định. Nhập mật khẩu mới (ít nhất 4 ký tự), hoặc bấm Hủy để đổi sau:'
+    );
+    if (newPwd === null) return;
+    const trimmed = newPwd.trim();
+    if (trimmed.length < 4 || trimmed === '123456') {
+      showToast('Mật khẩu mới phải từ 4 ký tự và khác mật khẩu mặc định. Chưa đổi.', 'warn');
+      return;
+    }
+    emp.password = trimmed;
+    emp.pin = trimmed;
+    saveLocalState(true);
+    syncWithCentralServer(true);
+    showToast('Đã đổi mật khẩu thành công.', 'success');
+  }
+
   function attemptLoginSubmit(ev) {
     if (ev && typeof ev.preventDefault === 'function') {
       ev.preventDefault();
@@ -2232,6 +2299,15 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       return;
     }
 
+    if (!isEmployeeCurrentlyActive(emp)) {
+      playFeedbackSound('ERROR');
+      if (errEl) {
+        errEl.textContent = 'Tài khoản này đã ngừng sử dụng. Vui lòng liên hệ Quản đốc.';
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+
     const expectedPassword = String(emp.password || emp.pin || '123456');
     const isPasswordMatch =
       rawPassword === expectedPassword ||
@@ -2255,6 +2331,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       playFeedbackSound('SUCCESS');
       renderAll();
       showToast(`Xin chào ${escapeHtml(emp.name)}.`, 'success');
+      if (rawPassword === '123456') {
+        setTimeout(() => promptChangeWorkerPassword(emp), 500);
+      }
     } else {
       playFeedbackSound('ERROR');
       if (errEl) {
@@ -2379,7 +2458,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const slotsSummaryText =
       summaryParts.length > 0 ? summaryParts.join(' • ') : 'Chưa chọn ca tăng ca nào (Chỉ làm công hành chính X)';
 
-    return {
+    const result = {
       isoDate,
       workDate: workDateStr,
       morningSlot,
@@ -2392,6 +2471,48 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       slotsSummaryText,
       isDriverNoTime: false
     };
+
+    if (isRestDayVn(workDateStr)) {
+      const rCheck = document.getElementById('restWorkCheck');
+      const rStartEl = document.getElementById('restStart');
+      const rEndEl = document.getElementById('restEnd');
+      const rStartHm = rStartEl && rStartEl.value ? rStartEl.value : '07:15';
+      const rEndHm = rEndEl && rEndEl.value ? rEndEl.value : '15:15';
+      const rStartStr = `${workDateStr} ${rStartHm}`;
+      const rEndStr = `${workDateStr} ${rEndHm}`;
+      const rStartMs = parseVnDateTimeToMs(rStartStr);
+      const rEndMs = parseVnDateTimeToMs(rEndStr);
+      const rHours =
+        rStartMs && rEndMs && rEndMs > rStartMs
+          ? Math.round(((rEndMs - rStartMs) / 3600000) * 100) / 100
+          : 0;
+      const restChecked = Boolean(rCheck && rCheck.checked) && rHours > 0;
+      const restSlot = {
+        slotKey: 'REST',
+        slotLabel: 'Làm ngày nghỉ',
+        checked: restChecked,
+        startHm: rStartHm,
+        endHm: rEndHm,
+        startTime: rStartStr,
+        endTime: rEndStr,
+        workDate: workDateStr,
+        estHours: rHours,
+        workMode: 'Tăng ca tại công ty'
+      };
+      result.isRestDay = true;
+      result.restLabel = getRestDayLabel(workDateStr);
+      result.restSlot = restSlot;
+      result.restRawChecked = Boolean(rCheck && rCheck.checked);
+      result.checkedSlots = restChecked ? [restSlot] : [];
+      result.totalHours = restChecked ? rHours : 0;
+      result.estHours = result.totalHours;
+      result.codeLabel = restChecked ? `${formatHoursClean(rHours)}h` : 'Nghỉ';
+      result.slotsSummaryText = restChecked
+        ? `${result.restLabel}: làm ${formatHoursClean(rHours)} giờ (${rStartHm}→${rEndHm})`
+        : `${result.restLabel}: nghỉ, không đi làm`;
+    }
+
+    return result;
   }
 
   function computeCurrentMobilePreviewStrings() {
@@ -2508,7 +2629,27 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const jobInput = document.getElementById('mobileJobContent');
     const noteInput = document.getElementById('mobileNoteInput');
 
-    if (dayRecords.length > 0) {
+    const restDayLoad = isRestDayVn(vnDate);
+    const restCheckEl = document.getElementById('restWorkCheck');
+    if (restDayLoad && restCheckEl) {
+      if (dayRecords.length > 0) {
+        const sorted = dayRecords
+          .slice()
+          .sort((a, b) => (parseVnDateTimeToMs(a.startTime) || 0) - (parseVnDateTimeToMs(b.startTime) || 0));
+        const hmOf = (t) => (String(t || '').split(' ')[1] || '').slice(0, 5);
+        restCheckEl.checked = true;
+        const rs = document.getElementById('restStart');
+        const re = document.getElementById('restEnd');
+        if (rs && hmOf(sorted[0].startTime)) rs.value = hmOf(sorted[0].startTime);
+        if (re && hmOf(sorted[sorted.length - 1].endTime)) re.value = hmOf(sorted[sorted.length - 1].endTime);
+        const jobInputR = document.getElementById('mobileJobContent');
+        if (jobInputR && sorted[0].jobContent) jobInputR.value = sorted[0].jobContent;
+      } else {
+        restCheckEl.checked = false;
+      }
+    }
+
+    if (dayRecords.length > 0 && !restDayLoad) {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = false;
       if (eCheck) eCheck.checked = false;
@@ -2599,6 +2740,25 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Tính toán các ca Sáng / Trưa / Tối đang chọn
     const daily = computeCurrentMobileDailySlots();
+
+    // Ngày nghỉ (Chủ nhật / lễ): chỉ hiện ô "Tôi có đi làm" và giờ làm thực tế
+    document.querySelectorAll('.normal-day-only').forEach((el) => {
+      el.style.display = daily.isRestDay ? 'none' : '';
+    });
+    const restSection = document.getElementById('restDaySection');
+    if (restSection) {
+      restSection.style.display = daily.isRestDay ? 'block' : 'none';
+      if (daily.isRestDay) {
+        const banner = document.getElementById('restDayBanner');
+        if (banner) {
+          banner.textContent = `${daily.restLabel} là ngày nghỉ. Chỉ báo nếu bạn có đi làm, ghi đúng số giờ làm (đủ ngày là 8 giờ).`;
+        }
+        const body = document.getElementById('restWorkBody');
+        if (body) body.style.display = daily.restRawChecked ? 'block' : 'none';
+        const hrsLbl = document.getElementById('restHoursLabel');
+        if (hrsLbl) hrsLbl.textContent = `Tổng: ${formatHoursClean(daily.restSlot.estHours)} giờ`;
+      }
+    }
 
     // Cập nhật giao diện 3 thẻ Ca Sáng / Trưa / Tối
     const cardMorning = document.getElementById('slotCardMorning');
@@ -2872,6 +3032,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const grid = document.getElementById('calGrid');
     if (!grid || !empName) return;
 
+    const empObj = state.employees.find((e) => e.name === empName);
     const todayIso = localIsoToday();
     if (!/^\d{4}-\d{2}$/.test(state.calMonth || '')) state.calMonth = todayIso.slice(0, 7);
     const [year, month] = state.calMonth.split('-').map(Number);
@@ -2898,6 +3059,9 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       const isFuture = iso > todayIso;
       const sum = getEmployeeDaySummary(empName, vn);
       const hasOt = sum.totalHours > 0;
+      const isRest = isRestDayVn(vn);
+      const holidayName = getHolidayName(vn);
+      const employed = isEmployedOn(empObj, iso);
       const lockInfo = state.lockedDays[vn];
       const isLocked = Boolean(lockInfo && lockInfo.locked);
       const hasWarn = Boolean(
@@ -2906,31 +3070,38 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       );
 
       let code = '';
-      if (hasOt) {
+      if (!employed) {
+        code = '';
+      } else if (hasOt) {
         code = sum.code;
         otDays += 1;
         totalHours += sum.totalHours;
-        workDays += 1;
-      } else if (!isFuture && !isSunday) {
-        code = 'X';
-        workDays += 1;
-      } else if (isSunday && !isFuture) {
-        code = 'CN';
+        if (!isRest) workDays += 1;
+      } else if (!isFuture) {
+        if (isRest) {
+          code = holidayName ? 'Lễ' : 'CN';
+        } else {
+          code = 'X';
+          workDays += 1;
+        }
       }
 
       const cls = ['cal-cell'];
       if (hasOt) cls.push('has-ot');
-      if (isSunday) cls.push('sunday');
+      if (isRest && holidayName) cls.push('holiday');
+      else if (isSunday) cls.push('sunday');
       if (isFuture) cls.push('future');
+      if (!employed) cls.push('off');
       if (iso === todayIso) cls.push('today');
       if (iso === state.calSelectedIso) cls.push('selected');
       if (isLocked) cls.push('locked');
       if (hasWarn) cls.push('warn');
 
-      cells += `<button type="button" class="${cls.join(' ')}" data-iso="${iso}"><span class="cal-day-num">${day}</span><span class="cal-code">${escapeHtml(code)}</span></button>`;
+      const tip = holidayName ? ` title="${escapeHtml(holidayName)}"` : '';
+      cells += `<button type="button" class="${cls.join(' ')}" data-iso="${iso}"${tip}><span class="cal-day-num">${day}</span><span class="cal-code">${escapeHtml(code)}</span></button>`;
 
-      if (hasOt || (!isFuture && !isSunday)) {
-        listRows += `<div class="cal-list-row${hasOt ? ' has-ot' : ''}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${hasOt ? escapeHtml(sum.detailStr) : 'Không tăng ca'}</span></div>`;
+      if (employed && (hasOt || (!isFuture && !isRest))) {
+        listRows += `<div class="cal-list-row${hasOt ? ' has-ot' : ''}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${hasOt ? escapeHtml(sum.detailStr) + (isRest ? ' (' + escapeHtml(getRestDayLabel(vn)) + ')' : '') : 'Không tăng ca'}</span></div>`;
       }
     }
 
@@ -2953,9 +3124,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         const sum = getEmployeeDaySummary(empName, vn);
         const locked = Boolean(state.lockedDays[vn] && state.lockedDays[vn].locked);
         detail.style.display = 'block';
-        detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}: ${escapeHtml(sum.code || 'X')}</strong></div>
+        const restNote = isRestDayVn(vn) ? ` (${escapeHtml(getRestDayLabel(vn))} - ngày nghỉ)` : '';
+        detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}${restNote}: ${escapeHtml(sum.code || sum.codeLabel)}</strong></div>
           <div class="sub-meta-text">${sum.totalHours > 0 ? escapeHtml(sum.detailStr) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
-          <button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;">${sum.totalHours > 0 ? 'Sửa ngày này' : 'Báo tăng ca ngày này'}</button>`;
+          <button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;">${sum.totalHours > 0 ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca ngày này')}</button>`;
       } else {
         detail.style.display = 'none';
       }
@@ -3032,7 +3204,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       }
 
       playFeedbackSound('ERROR');
-      showToast('Vui lòng tích chọn ít nhất 1 ca tăng ca (Sáng, Trưa hoặc Tối)!', 'error');
+      showToast(
+        daily.isRestDay
+          ? 'Ngày nghỉ: hãy tích "Tôi có đi làm ngày này" và nhập giờ làm nếu bạn có đi làm.'
+          : 'Vui lòng tích chọn ít nhất 1 ca tăng ca (Sáng, Trưa hoặc Tối)!',
+        'error'
+      );
       return;
     }
 
@@ -3431,9 +3608,16 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     // Xác định danh sách các cột Ngày hiển thị trên bảng Matrix
     let dateColumns = [];
+    const matrixMonth = /^\d{4}-\d{2}$/.test(state.matrixMonth || '') ? state.matrixMonth : localIsoToday().slice(0, 7);
+    state.matrixMonth = matrixMonth;
+    const [mxYear, mxMonth] = matrixMonth.split('-').map(Number);
+    const monthSuffix = `/${pad2(mxMonth)}/${mxYear}`;
+    const monthInputEl = document.getElementById('matrixMonthInput');
+    if (monthInputEl && monthInputEl.value !== matrixMonth) monthInputEl.value = matrixMonth;
     if (state.matrixShowAllDays) {
-      for (let d = 1; d <= 31; d++) {
-        dateColumns.push(`${pad2(d)}/10/2026`);
+      const dim = new Date(mxYear, mxMonth, 0).getDate();
+      for (let d = 1; d <= dim; d++) {
+        dateColumns.push(`${pad2(d)}${monthSuffix}`);
       }
     } else {
       const dateSet = new Set();
@@ -3446,10 +3630,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       Object.values(state.dayModAlerts || {}).forEach((a) => {
         if (a && a.workDate) dateSet.add(a.workDate);
       });
-      dateSet.add('15/10/2026');
-      dateSet.add('16/10/2026');
+      const todayVn = isoDateToVnDate(localIsoToday());
+      if (todayVn.endsWith(monthSuffix)) dateSet.add(todayVn);
+      if (dateSet.size === 0 || ![...dateSet].some((d) => d.endsWith(monthSuffix))) dateSet.add(`01${monthSuffix}`);
 
-      dateColumns = Array.from(dateSet).sort((a, b) => {
+      dateColumns = Array.from(dateSet).filter((d) => d.endsWith(monthSuffix)).sort((a, b) => {
         const msA = parseVnDateTimeToMs(`${a} 00:00`) || 0;
         const msB = parseVnDateTimeToMs(`${b} 00:00`) || 0;
         return msA - msB;
@@ -3465,9 +3650,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           .map((dStr) => {
             const shortDate = dStr.slice(0, 5); // dd/mm
             const isLocked = Boolean(state.lockedDays && state.lockedDays[dStr]?.locked);
+            const restHead = isRestDayVn(dStr) ? `<div class="matrix-head-rest">${escapeHtml(getRestDayLabel(dStr))}</div>` : '';
             return `
               <th style="min-width:96px;">
                 <div style="font-size:0.8rem;font-weight:800;color:var(--text-main);">${escapeHtml(shortDate)}</div>
+                ${restHead}
                 <div style="font-size:0.65rem;color:var(--text-muted);font-weight:500;">${escapeHtml(dStr.slice(6))}</div>
                 <button
                   type="button"
@@ -3488,7 +3675,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     `;
 
     // Lọc danh sách nhân viên theo bộ lọc hiện tại
+    const monthFirstIso = `${mxYear}-${pad2(mxMonth)}-01`;
+    const monthLastIso = `${mxYear}-${pad2(mxMonth)}-${pad2(new Date(mxYear, mxMonth, 0).getDate())}`;
     const filteredEmployees = state.employees.filter((emp) => {
+      if (emp.endDate && emp.endDate < monthFirstIso) return false;
+      if (emp.startDate && emp.startDate > monthLastIso) return false;
       if (state.adminFilterEmp !== 'ALL' && emp.name !== state.adminFilterEmp) return false;
       if (state.adminSearchQuery.trim()) {
         const q = state.adminSearchQuery.trim().toLowerCase();
@@ -3563,6 +3754,12 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
               `;
             }
 
+            if (!isEmployedOn(emp, vnDateToIsoDate(dStr))) {
+              return `<td class="matrix-cell off-col" title="${escapeHtml(emp.name)} chưa vào làm hoặc đã nghỉ việc"><span class="matrix-empty-dot">–</span></td>`;
+            }
+            if (sum.isRest) {
+              return `<td class="matrix-cell rest-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ"><span class="matrix-empty-dot">–</span></td>`;
+            }
             return `
               <td
                 class="matrix-cell"
@@ -3884,8 +4081,10 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     const delBtn = document.getElementById('btnDeleteOtRecord');
     const timeBlock = document.getElementById('editOtTimeBlock');
 
+    const editingRec = recordId ? state.records.find((r) => r.id === recordId) : null;
     if (empSelect) {
       empSelect.innerHTML = state.employees
+        .filter((e) => isEmployeeCurrentlyActive(e) || (editingRec && editingRec.employeeName === e.name))
         .map((e) => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.name)}</option>`)
         .join('');
     }
@@ -4034,7 +4233,16 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
               (e, i) => `
             <tr>
               <td style="text-align:center;">${i + 1}</td>
-              <td style="font-weight:800;">${escapeHtml(e.name)}</td>
+              <td style="font-weight:800;">
+                ${escapeHtml(e.name)}
+                <div class="emp-status-line${e.endDate ? ' ended' : ''}">${
+                  e.endDate
+                    ? 'Nghỉ việc từ ' + escapeHtml(isoDateToVnDate(e.endDate))
+                    : e.startDate
+                    ? 'Vào làm ' + escapeHtml(isoDateToVnDate(e.startDate))
+                    : 'Đang làm việc'
+                }</div>
+              </td>
               <td style="text-align:center;">
                 <input
                   type="text"
@@ -4059,9 +4267,16 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
                 <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
                   Lưu
                 </button>
-                <button type="button" class="action-btn btn-remove-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">
-                  Xóa
-                </button>
+                ${
+                  e.endDate
+                    ? `<button type="button" class="action-btn btn-rehire-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Đi làm lại</button>`
+                    : `<button type="button" class="action-btn btn-end-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Cho nghỉ việc</button>`
+                }
+                ${
+                  state.records.some((r) => r.employeeName === e.name)
+                    ? ''
+                    : `<button type="button" class="action-btn btn-remove-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Xóa</button>`
+                }
               </td>
             </tr>
           `
@@ -4110,6 +4325,43 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           renderAll();
           showToast(`Đã lưu tài khoản (${escapeHtml(newUsername)} / ${escapeHtml(newPassword)}) cho ${escapeHtml(target)}.`, 'success');
         }
+      });
+    });
+
+    container.querySelectorAll('.btn-end-emp').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-name');
+        const emp = state.employees.find((x) => x.name === target);
+        if (!emp) return;
+        const input = window.prompt(
+          `Ngày làm việc cuối cùng của ${target} (dd/mm/yyyy).\nTừ sau ngày này tài khoản sẽ bị khóa, dữ liệu cũ vẫn được giữ.`,
+          isoDateToVnDate(localIsoToday())
+        );
+        if (input === null) return;
+        if (!isValidVnDateOnly(input.trim())) {
+          showToast('Ngày không đúng định dạng dd/mm/yyyy.', 'error');
+          return;
+        }
+        emp.endDate = vnDateToIsoDate(input.trim());
+        saveLocalState(true);
+        syncWithCentralServer(true);
+        renderManageEmployeesList();
+        renderAll();
+        showToast(`Đã cho ${escapeHtml(target)} nghỉ việc từ sau ngày ${escapeHtml(input.trim())}.`, 'warn');
+      });
+    });
+
+    container.querySelectorAll('.btn-rehire-emp').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-name');
+        const emp = state.employees.find((x) => x.name === target);
+        if (!emp) return;
+        delete emp.endDate;
+        saveLocalState(true);
+        syncWithCentralServer(true);
+        renderManageEmployeesList();
+        renderAll();
+        showToast(`${escapeHtml(target)} đã được mở lại tài khoản.`, 'success');
       });
     });
 
@@ -4177,9 +4429,11 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     const finalPassword = password.length >= 4 ? password : '123456';
 
+    const startDateInput = document.getElementById('newEmpStartDate');
     state.employees.push({
       name,
       username,
+      startDate: (startDateInput && startDateInput.value) || localIsoToday(),
       password: finalPassword,
       pin: finalPassword,
       defaultOvertimeType: defType,
@@ -4188,6 +4442,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
 
     if (nameInput) nameInput.value = '';
     if (userInput) userInput.value = '';
+    if (startDateInput) startDateInput.value = '';
     saveLocalState(true);
     syncWithCentralServer(true);
     playFeedbackSound('SUCCESS');
@@ -4332,6 +4587,104 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     renderDeployQrCode();
   }
 
+  // ==========================================================================
+  // LỊCH NGHỈ LỄ / NGHỈ TẾT (ADMIN)
+  // ==========================================================================
+
+  function renderHolidayList() {
+    const box = document.getElementById('holidayListContainer');
+    if (!box) return;
+    const entries = Object.entries(state.holidays || {}).sort(
+      (a, b) => vnDateToIsoDate(a[0]).localeCompare(vnDateToIsoDate(b[0]))
+    );
+    if (entries.length === 0) {
+      box.innerHTML = '<div class="holiday-row"><span class="sub-meta-text">Chưa có ngày nghỉ nào.</span></div>';
+      return;
+    }
+    box.innerHTML = entries
+      .map(
+        ([vn, name]) => `<div class="holiday-row"><span><strong>${escapeHtml(vn)}</strong> - ${escapeHtml(name)}</span><button type="button" class="action-btn btn-del-holiday" data-vn="${escapeHtml(vn)}" style="padding:0.2rem 0.5rem;font-size:0.72rem;color:var(--rose);">Xóa</button></div>`
+      )
+      .join('');
+    box.querySelectorAll('.btn-del-holiday').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        delete state.holidays[btn.getAttribute('data-vn')];
+        persistHolidays();
+        renderHolidayList();
+      });
+    });
+  }
+
+  function persistHolidays() {
+    saveLocalState(true);
+    syncWithCentralServer(true);
+    renderAll();
+  }
+
+  function addHolidayRange(fromIso, toIso, name) {
+    let count = 0;
+    let cur = fromIso;
+    while (cur <= toIso && count < 60) {
+      state.holidays[isoDateToVnDate(cur)] = name;
+      cur = addDaysToIsoDate(cur, 1);
+      count += 1;
+    }
+    return count;
+  }
+
+  function bindHolidayEvents() {
+    document.getElementById('btnOpenHolidays')?.addEventListener('click', () => {
+      const yearEl = document.getElementById('holYear');
+      if (yearEl && !yearEl.value) yearEl.value = String(new Date().getFullYear());
+      renderHolidayList();
+      document.getElementById('modalHolidays')?.classList.add('open');
+    });
+    const closeFn = () => document.getElementById('modalHolidays')?.classList.remove('open');
+    document.getElementById('btnCloseHolidaysModal')?.addEventListener('click', closeFn);
+    document.getElementById('btnDoneHolidays')?.addEventListener('click', closeFn);
+
+    document.getElementById('btnAddHoliday')?.addEventListener('click', () => {
+      const name = (document.getElementById('holName')?.value || '').trim();
+      const from = document.getElementById('holFrom')?.value || '';
+      const to = document.getElementById('holTo')?.value || from;
+      if (!name || !from) {
+        showToast('Nhập tên ngày nghỉ và ngày bắt đầu.', 'error');
+        return;
+      }
+      if (to < from) {
+        showToast('Ngày kết thúc phải sau ngày bắt đầu.', 'error');
+        return;
+      }
+      const n = addHolidayRange(from, to, name);
+      persistHolidays();
+      renderHolidayList();
+      document.getElementById('holName').value = '';
+      document.getElementById('holFrom').value = '';
+      document.getElementById('holTo').value = '';
+      showToast(`Đã thêm ${n} ngày nghỉ: ${escapeHtml(name)}.`, 'success');
+    });
+
+    document.getElementById('btnLoadFixedHolidays')?.addEventListener('click', () => {
+      const year = Number(document.getElementById('holYear')?.value);
+      if (!year || year < 2024 || year > 2100) {
+        showToast('Nhập năm hợp lệ.', 'error');
+        return;
+      }
+      const fixed = [
+        ['01-01', 'Tết Dương lịch'],
+        ['04-30', 'Ngày Giải phóng miền Nam'],
+        ['05-01', 'Ngày Quốc tế Lao động'],
+        ['09-02', 'Quốc khánh']
+      ];
+      fixed.forEach(([md, name]) => {
+        state.holidays[isoDateToVnDate(`${year}-${md}`)] = name;
+      });
+      persistHolidays();
+      renderHolidayList();
+      showToast(`Đã thêm 4 ngày lễ cố định năm ${year}. Tết và Giỗ Tổ bạn tự thêm.`, 'success');
+    });
+  }
+
   function bindAllEvents() {
     // 0. Sự kiện Màn hình Đăng nhập (Tên đăng nhập + Mật khẩu) & Đăng xuất
     document.getElementById('formStandardLogin')?.addEventListener('submit', (e) => {
@@ -4445,6 +4798,8 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
       if (hasExisting) {
         loadExistingDayIntoMobileForm(activeWorkerName, isoDate, false);
       } else {
+        const restChk = document.getElementById('restWorkCheck');
+        if (restChk) restChk.checked = false;
         renderWorkerMobileView();
       }
     });
@@ -4471,6 +4826,22 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         renderWorkerMobileView();
       });
     });
+
+    ['restWorkCheck', 'restStart', 'restEnd'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('change', renderWorkerMobileView);
+      document.getElementById(id)?.addEventListener('input', renderWorkerMobileView);
+    });
+    const setRestRange = (startHm, endHm) => {
+      const rs = document.getElementById('restStart');
+      const re = document.getElementById('restEnd');
+      const rc = document.getElementById('restWorkCheck');
+      if (rs) rs.value = startHm;
+      if (re) re.value = endHm;
+      if (rc) rc.checked = true;
+      renderWorkerMobileView();
+    };
+    document.getElementById('btnRestFull')?.addEventListener('click', () => setRestRange('07:15', '15:15'));
+    document.getElementById('btnRestHalf')?.addEventListener('click', () => setRestRange('07:15', '11:15'));
 
     // Nút chọn nhanh giờ Trưa (2h: 11:15-13:15 hoặc 1h: 12:00-13:00)
     document.querySelectorAll('.slot-mini-btn[data-lunch-range]').forEach((btn) => {
@@ -4551,6 +4922,13 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
         `Đã chốt toàn bộ <strong>${activeDates.size} ngày</strong> có dữ liệu tăng ca! Mọi chỉnh sửa phát sinh sau thời điểm này sẽ tự động bôi vàng.`,
         'success'
       );
+    });
+
+    document.getElementById('matrixMonthInput')?.addEventListener('change', (e) => {
+      if (e.target.value) {
+        state.matrixMonth = e.target.value;
+        renderExcelMatrixSheet();
+      }
     });
 
     document.getElementById('toggleMatrixShowAllDays')?.addEventListener('change', (e) => {
@@ -4641,6 +5019,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
     document.getElementById('btnExportTemplateXlsx')?.addEventListener('click', downloadExactTemplateXlsx);
     document.getElementById('btnAdminAddRecord')?.addEventListener('click', () => openAdminEditOvertimeModal(null));
     document.getElementById('btnOpenManageEmployees')?.addEventListener('click', openManageEmployeesModal);
+    bindHolidayEvents();
 
     // Sao lưu & Nhập JSON
     document.getElementById('btnExportBackupJson')?.addEventListener('click', () => {
@@ -4650,6 +5029,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
           records: state.records,
           lockedDays: state.lockedDays,
           dayModAlerts: state.dayModAlerts,
+          holidays: state.holidays,
           exportedAt: getAuthoritativeServerDate().toISOString()
         },
         null,
@@ -4678,6 +5058,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
             state.records = parsed.records;
             if (parsed.lockedDays) state.lockedDays = parsed.lockedDays;
             if (parsed.dayModAlerts) state.dayModAlerts = parsed.dayModAlerts;
+            if (parsed.holidays) state.holidays = parsed.holidays;
             saveLocalState(true);
             syncWithCentralServer(true);
             renderAll();
@@ -4814,6 +5195,7 @@ CREATE POLICY "Admin manage overtime records" ON public.overtime_records
             state.offlineQueue = ev.data.payload.offlineQueue || state.offlineQueue;
             if (ev.data.payload.lockedDays) state.lockedDays = ev.data.payload.lockedDays;
             if (ev.data.payload.dayModAlerts) state.dayModAlerts = ev.data.payload.dayModAlerts;
+            if (ev.data.payload.holidays) state.holidays = ev.data.payload.holidays;
             renderAll();
           }
         };

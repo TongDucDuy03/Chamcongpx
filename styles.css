@@ -1887,3 +1887,18 @@ tr.data-row.modified-after-lock td {
 .cal-list-row { display: grid; grid-template-columns: 78px 54px 1fr; gap: 0.4rem; align-items: baseline; padding: 0.45rem 0.2rem; border-bottom: 1px solid var(--border-color); font-size: 0.84rem; cursor: pointer; }
 .cal-list-row.has-ot .cal-list-code { color: var(--primary); }
 .cal-list-detail { color: var(--text-secondary); font-size: 0.78rem; }
+
+/* Ngày nghỉ (Chủ nhật / lễ) */
+.rest-day-banner { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: var(--radius-md); padding: 0.6rem 0.75rem; font-weight: 600; font-size: 0.88rem; margin-bottom: 0.7rem; }
+.rest-work-check { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; font-size: 1rem; padding: 0.7rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-surface); margin-bottom: 0.7rem; cursor: pointer; }
+.rest-work-check input { width: 22px; height: 22px; }
+.rest-hours-label { margin-top: 0.5rem; font-weight: 700; color: var(--primary); }
+.cal-cell.holiday .cal-code { color: var(--rose); font-size: 0.74rem; }
+.cal-cell.holiday { background: #fef2f2; }
+.cal-cell.off { opacity: 0.4; cursor: default; }
+.matrix-cell.rest-col { background: #f3f4f6; }
+.matrix-cell.off-col { background: #f9fafb; color: var(--text-muted); }
+.matrix-head-rest { font-size: 0.62rem; color: var(--rose); font-weight: 700; }
+.emp-status-line { font-size: 0.7rem; font-weight: 500; color: var(--text-secondary); }
+.emp-status-line.ended { color: var(--rose); }
+.holiday-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); font-size: 0.86rem; }
