@@ -508,6 +508,35 @@
   }
 
   /**
+   * Chuẩn hóa ngày gõ tay về `dd/mm/yyyy` (chấp nhận 6/1/2026, 06-01-2026, 6.1.2026).
+   * Trả về '' nếu không phải ngày có thật.
+   */
+  function normalizeVnDate(input) {
+    const m = String(input || '').trim().match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+    if (!m) return '';
+    const vn = `${pad2(m[1])}/${pad2(m[2])}/${m[3]}`;
+    return isValidVnDateOnly(vn) ? vn : '';
+  }
+
+  /**
+   * Chuẩn hóa ngày giờ gõ tay về `dd/mm/yyyy hh:mm` (dạng máy chủ và file Excel yêu cầu).
+   * Chấp nhận giờ 6:15, 6h15, 6h, 06.15; chỉ gõ giờ thì lấy ngày `fallbackVnDate`.
+   * Phút phải đủ 2 chữ số (17:3 dễ nhầm 17:30 nên không nhận). Trả về '' nếu không hiểu được.
+   */
+  function normalizeVnDateTime(input, fallbackVnDate = '') {
+    const s = String(input || '').trim().replace(/\s+/g, ' ');
+    if (!s) return '';
+    const withDate = s.match(/^(\S+) (.+)$/);
+    const vnDate = normalizeVnDate(withDate ? withDate[1] : fallbackVnDate);
+    const t = (withDate ? withDate[2] : s).toLowerCase().match(/^(\d{1,2}) ?(?:[:h.] ?(\d{2})?)?$/);
+    if (!vnDate || !t) return '';
+    const hour = Number(t[1]);
+    const minute = Number(t[2] || 0);
+    if (hour > 23 || minute > 59) return '';
+    return `${vnDate} ${pad2(hour)}:${pad2(minute)}`;
+  }
+
+  /**
    * Tính số giờ tăng ca tạm tính từ `startTime` và `endTime` (`dd/mm/yyyy hh:mm`)
    */
   function computeEstimatedHours(record) {
@@ -666,27 +695,57 @@
         reason: 'Phải nhập đủ cả giờ "Bắt đầu" và "Kết thúc".'
       };
     }
-    const startMs = parseVnDateTimeToMs(startTime);
-    const endMs = parseVnDateTimeToMs(endTime);
-    if (startMs === null || endMs === null) {
+    // Chuẩn hóa cách gõ tay (6:15, 6h15, 6/1/2026...) về đúng dạng dd/mm/yyyy hh:mm trước khi lưu
+    if (workDate) {
+      const wd = normalizeVnDate(workDate);
+      if (!wd) {
+        return {
+          ok: false,
+          reason: `Ngày tính công "${workDate}" chưa đúng. Gõ theo dạng ngày/tháng/năm, ví dụ 15/10/2026.`
+        };
+      }
+      workDate = wd;
+    }
+    const rawStart = startTime;
+    const rawEnd = endTime;
+    startTime = normalizeVnDateTime(rawStart, workDate);
+    if (!startTime) {
       return {
         ok: false,
-        reason: 'Định dạng giờ Bắt đầu / Kết thúc phải chuẩn dd/mm/yyyy hh:mm (Ví dụ: 15/10/2026 17:15).'
+        reason: `Giờ bắt đầu "${rawStart}" chưa đúng. Gõ theo dạng 15/10/2026 06:15 (gõ 6:15 hoặc 6h15 cũng được).`
       };
     }
+    endTime = normalizeVnDateTime(rawEnd, startTime.split(' ')[0]);
+    if (!endTime) {
+      return {
+        ok: false,
+        reason: `Giờ kết thúc "${rawEnd}" chưa đúng. Gõ theo dạng 15/10/2026 18:15 (gõ 18:15 hoặc 18h15 cũng được).`
+      };
+    }
+    const startMs = parseVnDateTimeToMs(startTime);
+    const endMs = parseVnDateTimeToMs(endTime);
     if (endMs <= startMs) {
       return {
         ok: false,
         reason: 'Thời điểm Kết thúc phải lớn hơn thời điểm Bắt đầu.'
       };
     }
+    // Hai kiểm tra dưới giống hệt máy chủ, để báo lỗi ngay thay vì bị máy chủ từ chối sau khi đã đóng hộp thoại
+    if (endMs - startMs > 24 * 3600000) {
+      return {
+        ok: false,
+        reason: 'Một ca không được dài quá 24 giờ. Kiểm tra lại ngày ở ô Kết thúc.'
+      };
+    }
     if (!workDate) {
       workDate = startTime.split(' ')[0];
     }
-    if (!isValidVnDateOnly(workDate)) {
+    const startDayMs = parseVnDateTimeToMs(`${startTime.split(' ')[0]} 00:00`);
+    const workDayMs = parseVnDateTimeToMs(`${workDate} 00:00`);
+    if (Math.abs(workDayMs - startDayMs) > 36 * 3600000) {
       return {
         ok: false,
-        reason: 'Ngày tính công phải đúng định dạng dd/mm/yyyy (Ví dụ: 15/10/2026).'
+        reason: `Ngày tính công ${workDate} lệch quá xa so với giờ bắt đầu (${startTime}). Chỉ được lệch tối đa 1 ngày.`
       };
     }
     if (!isEmployedOn(empObj, vnDateToIsoDate(workDate))) {
@@ -3275,7 +3334,7 @@
         if (check.isOverlapError) {
           openOverlapWarningModal(check.candidateRecord, check.conflictRecord);
         } else {
-          showToast(`Ca ${slot.slotLabel}: ${check.reason}`, 'error');
+          showToast(`Ca ${slot.slotLabel}: ${escapeHtml(check.reason)}`, 'error');
         }
         return;
       }
@@ -4229,7 +4288,7 @@
       if (check.isOverlapError) {
         openOverlapWarningModal(check.candidateRecord, check.conflictRecord);
       } else {
-        showToast(`${check.reason}`, 'error');
+        showToast(escapeHtml(check.reason), 'error');
       }
       return;
     }
@@ -5189,6 +5248,33 @@
       document.getElementById('modalEditOvertime')?.classList.remove('open');
     });
     document.getElementById('btnSaveEditOt')?.addEventListener('click', saveAdminOvertimeModal);
+
+    // Ô giờ trong hộp thoại admin: rời ô thì tự chuyển 6:15 / 6h15 thành dạng chuẩn 16/10/2026 06:15
+    const otStartEl = document.getElementById('editOtStartStr');
+    const otEndEl = document.getElementById('editOtEndStr');
+    const otDateEl = document.getElementById('editOtWorkDateStr');
+    const otStartValue = () => normalizeVnDateTime(otStartEl?.value, normalizeVnDate(otDateEl?.value));
+    otDateEl?.addEventListener('change', () => {
+      const v = normalizeVnDate(otDateEl.value);
+      if (v) otDateEl.value = v;
+    });
+    otStartEl?.addEventListener('focus', () => {
+      otStartEl.dataset.prevDate = otStartValue().split(' ')[0];
+    });
+    otStartEl?.addEventListener('change', () => {
+      const v = otStartValue();
+      if (!v) return;
+      otStartEl.value = v;
+      // Ngày tính công đang theo ngày bắt đầu cũ thì đổi theo luôn
+      if (otDateEl && (!otDateEl.value.trim() || normalizeVnDate(otDateEl.value) === otStartEl.dataset.prevDate)) {
+        otDateEl.value = v.split(' ')[0];
+      }
+      otStartEl.dataset.prevDate = v.split(' ')[0];
+    });
+    otEndEl?.addEventListener('change', () => {
+      const v = normalizeVnDateTime(otEndEl.value, otStartValue().split(' ')[0]);
+      if (v) otEndEl.value = v;
+    });
     document.getElementById('btnDeleteOtRecord')?.addEventListener('click', () => {
       const idVal = document.getElementById('editOtRecordId')?.value;
       deleteOvertimeRecordById(idVal);
