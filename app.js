@@ -2565,6 +2565,15 @@
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '18:15';
       if (eOver) eOver.checked = false;
+    } else if (comboCode === 'LUNCH15_EVE05') {
+      if (mCheck) mCheck.checked = false;
+      if (lCheck) lCheck.checked = true;
+      if (lStart) lStart.value = '11:45';
+      if (lEnd) lEnd.value = '13:15';
+      if (eCheck) eCheck.checked = true;
+      if (eStart) eStart.value = '17:15';
+      if (eEnd) eEnd.value = '17:45';
+      if (eOver) eOver.checked = false;
     } else if (comboCode === 'LUNCH2_EVE1') {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = true;
@@ -2623,11 +2632,13 @@
     const m1 = m.checked && m.startHm === '06:15' && m.endHm === '07:15';
     const l1 = l.checked && l.startHm === '12:00' && l.endHm === '13:00';
     const l2 = l.checked && l.startHm === '11:15' && l.endHm === '13:15';
+    const l15 = l.checked && l.startHm === '11:45' && l.endHm === '13:15';
     const e1 = e.checked && e.startHm === '17:15' && e.endHm === '18:15';
     const e2 = e.checked && e.startHm === '17:15' && e.endHm === '19:15';
 
     if (m1 && l1 && !e.checked) return 'MORN1_LUNCH1';
     if (!m.checked && l1 && e1) return 'LUNCH1_EVE1';
+    if (!m.checked && l15 && e.checked && e.startHm === '17:15' && e.endHm === '17:45') return 'LUNCH15_EVE05';
     if (!m.checked && l2 && e1) return 'LUNCH2_EVE1';
     if (!m.checked && l2 && e2) return 'LUNCH2_EVE2';
     if (!m.checked && !l.checked && e1) return 'ONLY_EVE1';
