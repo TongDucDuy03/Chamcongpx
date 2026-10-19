@@ -324,7 +324,7 @@
     {
       id: 'OT_20261015_03',
       employeeName: 'Tống Đức Duy',
-      jobContent: 'Gia công & lắp ráp đơn hàng gấp tiến độ',
+      jobContent: DEFAULT_JOB_CONTENT,
       startTime: '15/10/2026 06:15',
       endTime: '15/10/2026 07:15',
       workDate: '15/10/2026',
@@ -340,7 +340,7 @@
     {
       id: 'OT_20261015_04',
       employeeName: 'Tống Đức Duy',
-      jobContent: 'Gia công & lắp ráp đơn hàng gấp tiến độ',
+      jobContent: DEFAULT_JOB_CONTENT,
       startTime: '15/10/2026 11:15',
       endTime: '15/10/2026 13:15',
       workDate: '15/10/2026',
@@ -356,7 +356,7 @@
     {
       id: 'OT_20261015_05',
       employeeName: 'Tống Đức Duy',
-      jobContent: 'Gia công & lắp ráp đơn hàng gấp tiến độ',
+      jobContent: DEFAULT_JOB_CONTENT,
       startTime: '15/10/2026 17:15',
       endTime: '15/10/2026 18:15',
       workDate: '15/10/2026',
@@ -2734,6 +2734,8 @@
     // Nhớ nội dung/ghi chú vừa nạp: lúc lưu nếu công nhân không sửa thì mỗi ca giữ nội dung riêng Quản đốc đã chỉnh
     state.formLoadedJob = jobInput ? jobInput.value.trim() : '';
     state.formLoadedNote = noteInput ? noteInput.value.trim() : '';
+    // Nút gợi ý sáng đúng theo nội dung vừa nạp (không để sáng "Làm theo kế hoạch" khi ngày đó lưu nội dung khác)
+    syncJobChipsToInput();
 
     if (switchTabToForm) {
       state.workerMobileSubTab = 'FORM';
