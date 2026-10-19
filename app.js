@@ -381,6 +381,7 @@
     showExcelGuideRows: true,
     matrixShowAllDays: false,
     matrixOnlyPending: false,
+    editReturnToQuick: false, // hộp sửa ca mở từ hộp xem nhanh ô bảng công: đóng thì quay lại hộp đó
     adminUnlocked: false,
 
     // Phiên đăng nhập & Phân quyền cô lập tài khoản
@@ -543,7 +544,8 @@
 
   /**
    * Ghép ô chọn ngày (`YYYY-MM-DD`) + 2 ô giờ (`hh:mm`) của hộp thoại Admin thành giờ `dd/mm/yyyy hh:mm`.
-   * Giờ kết thúc không lớn hơn giờ bắt đầu nghĩa là ca qua đêm, kết thúc vào hôm sau. Trả về null nếu thiếu.
+   * Giờ kết thúc nhỏ hơn giờ bắt đầu nghĩa là ca qua đêm, kết thúc vào hôm sau.
+   * Trả về null nếu thiếu, hoặc hai giờ bằng nhau (gần như luôn là chọn nhầm, không hiểu thành ca 24 giờ).
    */
   function composeAdminShiftTimes(isoDate, startHm, endHm) {
     const sHm = String(startHm || '').slice(0, 5);
@@ -551,7 +553,8 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate || '') || !/^\d{2}:\d{2}$/.test(sHm) || !/^\d{2}:\d{2}$/.test(eHm)) {
       return null;
     }
-    const overnight = eHm <= sHm;
+    if (eHm === sHm) return null;
+    const overnight = eHm < sHm;
     const startTime = `${isoDateToVnDate(isoDate)} ${sHm}`;
     const endTime = `${isoDateToVnDate(overnight ? addDaysToIsoDate(isoDate, 1) : isoDate)} ${eHm}`;
     const hours = Math.round(((parseVnDateTimeToMs(endTime) - parseVnDateTimeToMs(startTime)) / 3600000) * 100) / 100;
@@ -2425,7 +2428,11 @@
     const eStartHm = eStartEl && eStartEl.value ? eStartEl.value : '17:15';
     const eEndHm = eEndEl && eEndEl.value ? eEndEl.value : '18:15';
     let eOvernight = eOverEl ? Boolean(eOverEl.checked) : false;
-    if (eEndHm <= eStartHm) {
+    if (eEndHm === eStartHm) {
+      // Giờ bằng nhau là chọn nhầm: không hiểu thành ca 24 giờ (ca = 0 giờ, bấm Lưu sẽ báo lỗi)
+      eOvernight = false;
+      if (eOverEl) eOverEl.checked = false;
+    } else if (eEndHm < eStartHm) {
       eOvernight = true;
       if (eOverEl) eOverEl.checked = true;
     }
@@ -2890,8 +2897,16 @@
     const lockedNotice = document.getElementById('mobileDayLockedNotice');
     const isDayLocked = Boolean(state.lockedDays && state.lockedDays[daily.workDate]?.locked);
 
+    // Ngày Quản đốc nhập chi tiết hơn form thể hiện được (VD 2 ca Tối): khóa Lưu để không làm sai giờ / mất ca
+    const unsupportedReason =
+      existingSummary.records.length > 0 ? findFormUnsupportedReason(existingSummary.records, existingSummary.isRest) : '';
+
     if (existingNotice) {
-      if (existingSummary.records.length > 0) {
+      existingNotice.classList.toggle('unsupported', Boolean(unsupportedReason));
+      if (unsupportedReason) {
+        existingNotice.style.display = 'block';
+        existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> Quản đốc đã nhập chi tiết: <strong>${escapeHtml(existingSummary.detailStr)}</strong>. ${escapeHtml(unsupportedReason)}, form báo nhanh không sửa đúng được nên đã khóa nút Lưu. Cần sửa ngày này thì nhờ Quản đốc.`;
+      } else if (existingSummary.records.length > 0) {
         existingNotice.style.display = 'block';
         existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> bạn đã lưu <strong>${existingSummary.records.length} ca (${escapeHtml(existingSummary.codeLabel)} • ${escapeHtml(existingSummary.slotBreakdown)})</strong>. Bạn có thể chỉnh lại các ca bên dưới rồi bấm Lưu để cập nhật.`;
       } else {
@@ -2952,8 +2967,10 @@
     const submitBtn = document.getElementById('btnSubmitMobileOvertime');
     if (submitBtn && !state.isWaitingServerAck) {
       const nothingChosen = daily.checkedSlots.length === 0 && existingSummary.records.length === 0;
-      submitBtn.disabled = nothingChosen;
-      if (nothingChosen && btnSubmitText) {
+      submitBtn.disabled = nothingChosen || Boolean(unsupportedReason);
+      if (unsupportedReason && btnSubmitText) {
+        btnSubmitText.textContent = 'Ngày này cần Quản đốc sửa';
+      } else if (nothingChosen && btnSubmitText) {
         btnSubmitText.textContent = daily.isRestDay
           ? 'Nếu có đi làm, tích "Tôi có đi làm ngày này"'
           : 'Chọn ca làm ở trên rồi bấm Lưu';
@@ -3417,6 +3434,28 @@
   }
 
   /**
+   * Form báo nhanh chỉ có 1 khoảng giờ cho mỗi buổi Sáng / Trưa / Tối (ngày nghỉ: 1 khoảng), chỉ ca Tối được qua đêm.
+   * Ngày Quản đốc nhập chi tiết hơn thế thì form không thể hiện đúng: nạp vào rồi lưu sẽ làm sai giờ hoặc mất ca.
+   * Trả về lý do nếu form không sửa được ngày này, '' nếu sửa được. Cách chia buổi giống loadExistingDayIntoMobileForm.
+   */
+  function findFormUnsupportedReason(dayRecords, isRest) {
+    const recs = dayRecords.filter((r) => r && !r.isDriverNoTime);
+    if (isRest) return recs.length > 1 ? `Ngày nghỉ này có ${recs.length} khoảng giờ làm riêng` : '';
+    const labels = { MORNING: 'Sáng', LUNCH: 'Trưa', EVENING: 'Tối' };
+    const count = { MORNING: 0, LUNCH: 0, EVENING: 0 };
+    for (const r of recs) {
+      const [sDate, sHm = ''] = String(r.startTime || '').trim().split(/\s+/);
+      const eDate = String(r.endTime || '').trim().split(/\s+/)[0];
+      const h = parseInt(sHm.split(':')[0] || '17', 10);
+      const slot = r.workMode === 'Tăng ca trưa' || (h >= 11 && h <= 13) ? 'LUNCH' : h < 11 ? 'MORNING' : 'EVENING';
+      if (slot !== 'EVENING' && sDate !== eDate) return `Ca ${labels[slot]} kéo sang ngày hôm sau`;
+      count[slot] += 1;
+    }
+    const multi = Object.keys(count).filter((k) => count[k] > 1);
+    return multi.length ? `Có ${multi.map((k) => `${count[k]} ca ${labels[k]}`).join(', ')} trong cùng ngày` : '';
+  }
+
+  /**
    * Công nhân lưu lại một ngày đã có ca: ca giữ nguyên giờ thì giữ mã ca và những gì Quản đốc đã chỉnh
    * (Giờ chốt, Loại tăng ca, Hình thức ca Sáng/Trưa). Ca đổi giờ thì Giờ chốt cũ không còn đúng nên bỏ.
    * `loaded` = nội dung/ghi chú lúc nạp form ({ job, note }): công nhân không sửa thì mỗi ca giữ nội dung riêng.
@@ -3484,6 +3523,15 @@
     const noteText = (noteEl ? noteEl.value : '').trim();
 
     const beforeSummary = getEmployeeDaySummary(activeWorkerName, daily.workDate);
+    const unsupportedReason = findFormUnsupportedReason(beforeSummary.records, beforeSummary.isRest);
+    if (unsupportedReason) {
+      playFeedbackSound('ERROR');
+      showToast(
+        `Ngày ${escapeHtml(daily.workDate)}: ${escapeHtml(unsupportedReason)}, form báo nhanh không sửa đúng được. Cần sửa thì nhờ Quản đốc.`,
+        'error'
+      );
+      return;
+    }
     const isDayLocked = Boolean(state.lockedDays && state.lockedDays[daily.workDate]?.locked);
     const authoritativeServerStr = formatDateTimeDDMMYYYYHHMM(new Date(nowServerMs));
 
@@ -4392,60 +4440,83 @@
       return;
     }
 
-    const slotDefs = [];
-    if (comboCode === 'REST_8') {
-      slotDefs.push({ startHm: '07:15', endHm: '15:15', workMode: 'Tăng ca tại công ty' });
-    } else if (comboCode === 'ONLY_EVE1') {
-      slotDefs.push({ startHm: '17:15', endHm: '18:15', workMode: defaultMode });
-    } else if (comboCode === 'ONLY_LUNCH2') {
-      slotDefs.push({ startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' });
-    } else if (comboCode === 'ONLY_EVE2') {
-      slotDefs.push({ startHm: '17:15', endHm: '19:15', workMode: defaultMode });
-    } else if (comboCode === 'LUNCH2_EVE1') {
-      slotDefs.push(
-        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
-        { startHm: '17:15', endHm: '18:15', workMode: defaultMode }
-      );
-    } else if (comboCode === 'FULL_615_1815') {
-      slotDefs.push(
-        { startHm: '06:15', endHm: '07:15', workMode: 'Tăng ca tại công ty' },
-        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
-        { startHm: '17:15', endHm: '18:15', workMode: defaultMode }
-      );
-    } else if (comboCode === 'FULL_615_1915') {
-      slotDefs.push(
-        { startHm: '06:15', endHm: '07:15', workMode: 'Tăng ca tại công ty' },
-        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
-        { startHm: '17:15', endHm: '19:15', workMode: defaultMode }
-      );
-    }
+    const M1 = { slotKey: 'MORNING', startHm: '06:15', endHm: '07:15', workMode: 'Tăng ca tại công ty' };
+    const L2 = { slotKey: 'LUNCH', startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' };
+    const E1 = { slotKey: 'EVENING', startHm: '17:15', endHm: '18:15', workMode: defaultMode };
+    const E2 = { ...E1, endHm: '19:15' };
+    const combos = {
+      REST_8: [{ slotKey: 'REST', startHm: '07:15', endHm: '15:15', workMode: 'Tăng ca tại công ty' }],
+      ONLY_EVE1: [E1],
+      ONLY_LUNCH2: [L2],
+      ONLY_EVE2: [E2],
+      LUNCH2_EVE1: [L2, E1],
+      FULL_615_1815: [M1, L2, E1],
+      FULL_615_1915: [M1, L2, E2]
+    };
+    const slotDefs = combos[comboCode] || [];
     if (slotDefs.length === 0) return;
 
-    const existingJob = beforeSummary.records[0]?.jobContent || DEFAULT_JOB_CONTENT;
-    const existingNote = beforeSummary.records[0]?.note || '';
+    const isRest = isRestDayVn(vnDate);
+    const oldDayRecs = state.records.filter((r) => r.employeeName === empName && r.workDate === vnDate);
+    const plan = planDayComboChange(oldDayRecs, slotDefs, vnDate, isRest);
+    if (plan.change.length === 0 && plan.add.length === 0 && plan.remove.length === 0) {
+      showToast(`Ngày <strong>${escapeHtml(vnDate)}</strong> của <strong>${escapeHtml(empName)}</strong> đã đúng tổ hợp ca này rồi.`, 'warn');
+      return;
+    }
+
+    // Ngày đã có ca: cho xem trước Giữ / Đổi / Thêm / Xóa rồi mới áp dụng
+    if (oldDayRecs.length > 0) {
+      const hm = (t) => (String(t || '').split(' ')[1] || '').slice(0, 5);
+      const nameOf = (t, mode) => {
+        const h = Number(hm(t).split(':')[0]);
+        if (isRest) return '';
+        return mode === 'Tăng ca trưa' || (h >= 11 && h <= 13) ? 'Trưa ' : h < 11 ? 'Sáng ' : 'Tối ';
+      };
+      const range = (r) => `${nameOf(r.startTime, r.workMode)}${hm(r.startTime)}–${hm(r.endTime)}`;
+      const hasOverride = (r) => r.overrideHours !== null && r.overrideHours !== undefined;
+      const lines = [
+        ...plan.keep.map((r) => `• Giữ nguyên: ${range(r)}`),
+        ...plan.change.map(
+          (c) => `• Đổi giờ: ${range(c.old)} → ${hm(c.startTime)}–${hm(c.endTime)}${hasOverride(c.old) ? ' (bỏ Giờ chốt cũ)' : ''}`
+        ),
+        ...plan.add.map((a) => `• Thêm: ${range(a)}`),
+        ...plan.remove.map((r) => `• Xóa: ${range(r)}`)
+      ];
+      if (
+        !window.confirm(
+          `Đặt ngày ${vnDate} của ${empName} thành:\n\n${lines.join('\n')}\n\nCa giữ nguyên hoặc đổi giờ vẫn giữ nội dung, ghi chú, loại tăng ca.\nÁp dụng thay đổi?`
+        )
+      ) {
+        return;
+      }
+    }
+
     const isLocked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
     const nowServerStr = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
-
-    const otherRecords = state.records.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
-    const backup = state.records;
-    state.records = [...otherRecords];
-
-    for (let i = 0; i < slotDefs.length; i++) {
-      const s = slotDefs[i];
-      const check = validateAndNormalizeRecord({
+    const lockFields = { modifiedAfterLock: isLocked, modifiedAt: isLocked ? nowServerStr : '' };
+    const dayJob = oldDayRecs[0]?.jobContent || DEFAULT_JOB_CONTENT;
+    const drafts = [
+      ...plan.change.map((c) => ({ ...c.old, startTime: c.startTime, endTime: c.endTime, overrideHours: null, ...lockFields })),
+      ...plan.add.map((a) => ({
         employeeName: empName,
-        jobContent: existingJob,
-        startTime: `${vnDate} ${s.startHm}`,
-        endTime: `${vnDate} ${s.endHm}`,
+        jobContent: dayJob,
+        startTime: a.startTime,
+        endTime: a.endTime,
         workDate: vnDate,
         overrideHours: null,
         overtimeType: defaultType,
-        workMode: s.workMode,
-        note: existingNote,
+        workMode: a.workMode,
+        note: '',
         isDriverNoTime: false,
-        modifiedAfterLock: isLocked,
-        modifiedAt: isLocked ? nowServerStr : ''
-      });
+        ...lockFields
+      }))
+    ];
+
+    // Ca giữ nguyên để nguyên vẹn; ca đổi giờ / thêm mới kiểm tra lại (chồng giờ, ngày làm việc...)
+    const backup = state.records;
+    state.records = [...state.records.filter((r) => !oldDayRecs.includes(r)), ...plan.keep];
+    for (const raw of drafts) {
+      const check = validateAndNormalizeRecord(raw);
       if (!check.ok) {
         state.records = backup;
         playFeedbackSound('ERROR');
@@ -4469,6 +4540,34 @@
       `Đã đặt <strong>${escapeHtml(afterSummary.codeLabel)} (${formatHoursClean(afterSummary.totalHours)}h)</strong> ngày <strong>${escapeHtml(vnDate)}</strong> cho <strong>${escapeHtml(empName)}</strong>!`,
       'success'
     );
+  }
+
+  /**
+   * Kế hoạch đặt 1 ngày về tổ hợp ca `slotDefs` ({ slotKey, startHm, endHm, workMode }) mà không làm mất thông tin:
+   * ca trùng giờ giữ nguyên hoàn toàn; ca cùng buổi khác giờ thì đổi giờ (giữ nội dung, ghi chú, loại tăng ca);
+   * còn lại là thêm mới hoặc xóa. Cách chia buổi giống form công nhân.
+   */
+  function planDayComboChange(oldRecords, slotDefs, vnDate, isRest) {
+    const slotOf = (r) => {
+      if (isRest) return 'REST';
+      const h = parseInt(((r.startTime || '').split(' ')[1] || '17').split(':')[0], 10);
+      return r.workMode === 'Tăng ca trưa' || (h >= 11 && h <= 13) ? 'LUNCH' : h < 11 ? 'MORNING' : 'EVENING';
+    };
+    const used = new Set();
+    const plan = { keep: [], change: [], add: [], remove: [] };
+    slotDefs.forEach((s) => {
+      const startTime = `${vnDate} ${s.startHm}`;
+      const endTime = `${vnDate} ${s.endHm}`;
+      const free = oldRecords.filter((r) => !used.has(r.id));
+      const same = free.find((r) => r.startTime === startTime && r.endTime === endTime);
+      const match = same || free.find((r) => slotOf(r) === s.slotKey);
+      if (match) used.add(match.id);
+      if (same) plan.keep.push(same);
+      else if (match) plan.change.push({ old: match, startTime, endTime });
+      else plan.add.push({ ...s, startTime, endTime });
+    });
+    plan.remove = oldRecords.filter((r) => !used.has(r.id));
+    return plan;
   }
 
   /**
@@ -4719,12 +4818,15 @@
     }
     const previewEl = document.getElementById('editOtTimePreview');
     const t = composeAdminShiftTimes(iso, sHm, eHm);
+    const sameTime = Boolean(sHm) && sHm === eHm;
     if (previewEl) {
-      previewEl.classList.toggle('overnight', Boolean(t && t.overnight));
+      previewEl.classList.toggle('overnight', Boolean(t && t.overnight) || sameTime);
       previewEl.innerHTML = t
         ? `Tăng ca <strong>${formatHoursClean(t.hours)} giờ</strong>: ${escapeHtml(t.startTime)} → ${escapeHtml(t.endTime)}${
             t.overnight ? ' <strong>(qua đêm, kết thúc sáng hôm sau)</strong>' : ''
           }`
+        : sameTime
+        ? '<strong>Giờ bắt đầu và giờ kết thúc đang bằng nhau.</strong> Kiểm tra lại giờ kết thúc.'
         : 'Chọn ngày làm, giờ bắt đầu và giờ kết thúc.';
     }
     document.querySelectorAll('[data-admin-preset]').forEach((btn) => {
@@ -4812,6 +4914,13 @@
     if (datePicker) datePicker.dataset.prev = datePicker.value;
     refreshAdminTimePreview();
 
+    // Mở từ hộp xem nhanh ô bảng công: tạm ẩn hộp đó (không để 2 hộp chồng nhau), đóng hộp sửa thì quay lại
+    const quickModal = document.getElementById('modalMatrixCellQuick');
+    state.editReturnToQuick = Boolean(quickModal && quickModal.classList.contains('open'));
+    if (state.editReturnToQuick) quickModal.classList.remove('open');
+    const cancelBtn = document.getElementById('btnCancelEditOt');
+    if (cancelBtn) cancelBtn.textContent = state.editReturnToQuick ? '← Quay lại chi tiết ngày' : 'Hủy';
+
     if (modal) modal.classList.add('open');
   }
 
@@ -4859,8 +4968,15 @@
       document.getElementById('editOtEndTime')?.value
     );
     if (!times) {
+      const sHm = (document.getElementById('editOtStartTime')?.value || '').slice(0, 5);
+      const sameTime = Boolean(sHm) && sHm === (document.getElementById('editOtEndTime')?.value || '').slice(0, 5);
       playFeedbackSound('ERROR');
-      showToast('Hãy chọn đủ Ngày làm, Giờ bắt đầu và Giờ kết thúc.', 'error');
+      showToast(
+        sameTime
+          ? 'Giờ bắt đầu và giờ kết thúc đang bằng nhau. Kiểm tra lại giờ kết thúc.'
+          : 'Hãy chọn đủ Ngày làm, Giờ bắt đầu và Giờ kết thúc.',
+        'error'
+      );
       return;
     }
 
@@ -4891,13 +5007,23 @@
 
     saveLocalState(true);
     syncWithCentralServer(true);
-    document.getElementById('modalEditOvertime')?.classList.remove('open');
     playFeedbackSound('SUCCESS');
     renderAll();
-    if (document.getElementById('modalMatrixCellQuick')?.classList.contains('open')) {
-      renderMatrixCellQuickModal();
-    }
+    closeAdminEditModal();
     showToast(`Đã lưu dòng tăng ca của <strong>${escapeHtml(check.record.employeeName)}</strong>!`, 'success');
+  }
+
+  /**
+   * Đóng hộp Thêm/Sửa ca. Nếu hộp được mở từ hộp xem nhanh ô bảng công thì mở lại hộp đó (dữ liệu mới nhất):
+   * mỗi lúc chỉ một hộp hiện, không để hộp này che hộp kia.
+   */
+  function closeAdminEditModal() {
+    document.getElementById('modalEditOvertime')?.classList.remove('open');
+    if (state.editReturnToQuick && state.quickCellEmp && state.quickCellDate) {
+      renderMatrixCellQuickModal();
+      document.getElementById('modalMatrixCellQuick')?.classList.add('open');
+    }
+    state.editReturnToQuick = false;
   }
 
   function deleteOvertimeRecordById(recordId) {
@@ -4922,9 +5048,10 @@
 
     saveLocalState(true);
     syncWithCentralServer(true);
-    document.getElementById('modalEditOvertime')?.classList.remove('open');
     renderAll();
-    if (document.getElementById('modalMatrixCellQuick')?.classList.contains('open')) {
+    if (document.getElementById('modalEditOvertime')?.classList.contains('open')) {
+      closeAdminEditModal();
+    } else if (document.getElementById('modalMatrixCellQuick')?.classList.contains('open')) {
       renderMatrixCellQuickModal();
     }
     showToast(`Đã xóa dòng tăng ca của <strong>${escapeHtml(removed.employeeName)}</strong>`, 'warn');
@@ -5818,12 +5945,8 @@
       document.getElementById('modalOverlapWarn')?.classList.remove('open');
     });
 
-    document.getElementById('btnCloseEditOtModal')?.addEventListener('click', () => {
-      document.getElementById('modalEditOvertime')?.classList.remove('open');
-    });
-    document.getElementById('btnCancelEditOt')?.addEventListener('click', () => {
-      document.getElementById('modalEditOvertime')?.classList.remove('open');
-    });
+    document.getElementById('btnCloseEditOtModal')?.addEventListener('click', closeAdminEditModal);
+    document.getElementById('btnCancelEditOt')?.addEventListener('click', closeAdminEditModal);
     document.getElementById('btnSaveEditOt')?.addEventListener('click', saveAdminOvertimeModal);
 
     // Sự kiện Modal Xem & Chỉnh Nhanh Ô Bảng Công (#modalMatrixCellQuick)

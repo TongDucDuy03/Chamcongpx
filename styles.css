@@ -1271,6 +1271,11 @@ button, input, select, textarea {
   display: flex;
 }
 
+/* Hộp báo trùng giờ mở ra từ hộp sửa ca: phải nằm trên hộp sửa, không bị che */
+#modalOverlapWarn {
+  z-index: 320;
+}
+
 .modal-dialog {
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
@@ -1377,6 +1382,13 @@ button, input, select, textarea {
   font-weight: 600;
   line-height: 1.4;
   margin-top: 0.4rem;
+}
+
+/* Ngày Quản đốc nhập chi tiết hơn form thể hiện được: form khóa Lưu */
+.day-existing-notice-bar.unsupported {
+  background: var(--amber-light);
+  border-color: #fcd34d;
+  color: #92400e;
 }
 
 .daily-slots-stack {
