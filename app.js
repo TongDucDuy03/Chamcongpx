@@ -4481,23 +4481,6 @@
     );
   }
 
-  function copyEmployeeZaloCredentials(empName, customPass = '') {
-    const emp = state.employees.find((e) => e.name === empName);
-    if (!emp) return;
-    const appUrl = window.location.origin + window.location.pathname;
-    const username = emp.username || slugifyVietnamese(emp.name);
-    const pwd = customPass || (REMOTE_MODE ? '(Mật khẩu đã cấp / mặc định 123456)' : (emp.password || emp.pin || '123456'));
-    const text = [
-      `📌 Tài khoản Sổ Báo Tăng Ca — ${emp.name}`,
-      `• Đường dẫn: ${appUrl}`,
-      `• Tên đăng nhập: ${username}`,
-      `• Mật khẩu: ${pwd}`
-    ].join('\n');
-    navigator.clipboard?.writeText(text);
-    playFeedbackSound('SUCCESS');
-    showToast(`Đã sao chép thông tin đăng nhập của <strong>${escapeHtml(emp.name)}</strong> để dán gửi Zalo!`, 'success');
-  }
-
   /**
    * Render Sheet 1 ("Chi tiết tăng ca") giống hệt cấu trúc dòng 1..N trong Excel
    */
@@ -4656,9 +4639,6 @@
           <td>${escapeHtml(emp.defaultWorkMode)}</td>
           <td style="text-align:center;font-weight:800;color:var(--primary);">${empRecs.length} ca (${formatHoursClean(totalHrs)}h)</td>
           <td style="text-align:center;white-space:nowrap;">
-            <button type="button" class="action-btn btn-copy-zalo-s2" data-name="${escapeHtml(emp.name)}" style="padding:0.25rem 0.55rem;font-size:0.74rem;" title="Sao chép đường dẫn + tài khoản để gửi Zalo cho công nhân">
-              Copy Zalo
-            </button>
             <button type="button" class="action-btn" onclick="window.__openChangePinFromSheet2()" style="padding:0.25rem 0.6rem;font-size:0.74rem;">
               Sửa TK / MK
             </button>
@@ -4668,13 +4648,6 @@
     });
 
     tbody.innerHTML = html;
-
-    tbody.querySelectorAll('.btn-copy-zalo-s2').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const empName = btn.getAttribute('data-name');
-        if (empName) copyEmployeeZaloCredentials(empName);
-      });
-    });
   }
 
   window.__openChangePinFromSheet2 = function () {
@@ -5026,9 +4999,6 @@
                 <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
                   Lưu
                 </button>
-                <button type="button" class="action-btn btn-copy-emp-zalo" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;" title="Copy tin nhắn Zalo gửi tài khoản cho công nhân">
-                  Copy Zalo
-                </button>
                 ${
                   e.endDate
                     ? `<button type="button" class="action-btn btn-rehire-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Đi làm lại</button>`
@@ -5047,14 +5017,6 @@
         </tbody>
       </table>
     `;
-
-    container.querySelectorAll('.btn-copy-emp-zalo').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const target = btn.getAttribute('data-name');
-        const passEl = container.querySelector(`.emp-password-inline-input[data-name="${CSS.escape(target)}"]`);
-        copyEmployeeZaloCredentials(target, (passEl?.value || '').trim());
-      });
-    });
 
     container.querySelectorAll('.btn-save-emp-cred').forEach((btn) => {
       btn.addEventListener('click', () => {
