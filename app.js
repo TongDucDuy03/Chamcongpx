@@ -2532,7 +2532,7 @@
   }
 
   /**
-   * Áp dụng nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 18h15 -> X+4)
+   * Áp dụng nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 17h15 -> X+2)
    */
   function applyMobileComboPreset(comboCode) {
     const mCheck = document.getElementById('slotMorningCheck');
@@ -2548,27 +2548,22 @@
     const eEnd = document.getElementById('slotEveningEnd');
     const eOver = document.getElementById('slotEveningOvernight');
 
-    if (comboCode === 'FULL_615_1815') {
+    if (comboCode === 'MORN1_LUNCH1') {
       if (mCheck) mCheck.checked = true;
       if (mStart) mStart.value = '06:15';
       if (mEnd) mEnd.value = '07:15';
       if (lCheck) lCheck.checked = true;
-      if (lStart) lStart.value = '11:15';
-      if (lEnd) lEnd.value = '13:15';
+      if (lStart) lStart.value = '12:00';
+      if (lEnd) lEnd.value = '13:00';
+      if (eCheck) eCheck.checked = false;
+    } else if (comboCode === 'LUNCH1_EVE1') {
+      if (mCheck) mCheck.checked = false;
+      if (lCheck) lCheck.checked = true;
+      if (lStart) lStart.value = '12:00';
+      if (lEnd) lEnd.value = '13:00';
       if (eCheck) eCheck.checked = true;
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '18:15';
-      if (eOver) eOver.checked = false;
-    } else if (comboCode === 'FULL_615_1915') {
-      if (mCheck) mCheck.checked = true;
-      if (mStart) mStart.value = '06:15';
-      if (mEnd) mEnd.value = '07:15';
-      if (lCheck) lCheck.checked = true;
-      if (lStart) lStart.value = '11:15';
-      if (lEnd) lEnd.value = '13:15';
-      if (eCheck) eCheck.checked = true;
-      if (eStart) eStart.value = '17:15';
-      if (eEnd) eEnd.value = '19:15';
       if (eOver) eOver.checked = false;
     } else if (comboCode === 'LUNCH2_EVE1') {
       if (mCheck) mCheck.checked = false;
@@ -2595,12 +2590,6 @@
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '18:15';
       if (eOver) eOver.checked = false;
-    } else if (comboCode === 'ONLY_LUNCH2') {
-      if (mCheck) mCheck.checked = false;
-      if (lCheck) lCheck.checked = true;
-      if (lStart) lStart.value = '11:15';
-      if (lEnd) lEnd.value = '13:15';
-      if (eCheck) eCheck.checked = false;
     } else if (comboCode === 'ONLY_EVE2') {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = false;
@@ -2632,17 +2621,17 @@
     const l = daily.lunchSlot;
     const e = daily.eveningSlot;
     const m1 = m.checked && m.startHm === '06:15' && m.endHm === '07:15';
+    const l1 = l.checked && l.startHm === '12:00' && l.endHm === '13:00';
     const l2 = l.checked && l.startHm === '11:15' && l.endHm === '13:15';
     const e1 = e.checked && e.startHm === '17:15' && e.endHm === '18:15';
     const e2 = e.checked && e.startHm === '17:15' && e.endHm === '19:15';
 
-    if (m1 && l2 && e1) return 'FULL_615_1815';
-    if (m1 && l2 && e2) return 'FULL_615_1915';
+    if (m1 && l1 && !e.checked) return 'MORN1_LUNCH1';
+    if (!m.checked && l1 && e1) return 'LUNCH1_EVE1';
     if (!m.checked && l2 && e1) return 'LUNCH2_EVE1';
     if (!m.checked && l2 && e2) return 'LUNCH2_EVE2';
     if (!m.checked && !l.checked && e1) return 'ONLY_EVE1';
     if (!m.checked && !l.checked && e2) return 'ONLY_EVE2';
-    if (!m.checked && l2 && !e.checked) return 'ONLY_LUNCH2';
     if (m1 && !l.checked && e1) return 'MORN1_EVE1';
     return '';
   }
@@ -5618,7 +5607,7 @@
     document.getElementById('btnDateToday')?.addEventListener('click', () => jumpDate(0));
     document.getElementById('btnDateYesterday')?.addEventListener('click', () => jumpDate(-1));
 
-    // Chọn nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 18h15 -> X+4)
+    // Chọn nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 17h15 -> X+2)
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         const comboCode = btn.getAttribute('data-combo');
