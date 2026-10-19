@@ -6,7 +6,7 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 
 ## Cách dùng
 
-**Công nhân** — mở link hoặc quét mã QR, đăng nhập bằng tên đăng nhập + mật khẩu quản đốc cấp (lần đầu đăng nhập sẽ được nhắc đổi mật khẩu).
+**Công nhân** — mở link quản đốc gửi qua Zalo, đăng nhập bằng tên đăng nhập + mật khẩu quản đốc cấp (lần đầu đăng nhập sẽ được nhắc đổi mật khẩu).
 - *Báo tăng ca*: chọn ngày (Hôm nay / Hôm qua), chọn mẫu ca, chọn nội dung việc, bấm Lưu.
 - *Bảng công*: xem cả tháng, mỗi ngày là `X`, `X+1`, `X+4`... và tổng giờ tăng ca. Bấm vào một ngày để xem hoặc sửa.
 - Chủ nhật và ngày lễ: chỉ báo nếu có đi làm, ghi đúng số giờ (đủ ngày là 8 giờ).
@@ -17,7 +17,7 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 - *Nhân sự & Tài khoản*: thêm nhân viên (mật khẩu ban đầu do bạn đặt, nhân viên phải đổi lần đầu), đặt lại mật khẩu, cho nghỉ việc / đi làm lại. Mật khẩu được băm, không ai xem lại được, chỉ đặt lại.
 - *Lịch nghỉ lễ*: khai báo ngày lễ, nghỉ Tết.
 - *Sao lưu / Nhập file*: sao lưu 400 ngày gần nhất ra file JSON (không có mật khẩu), nhập lại khi cần.
-- *Mã QR & Kết nối*: mã QR cho công nhân quét.
+- *Kết nối*: đường dẫn gửi công nhân (nút Sao chép) và trạng thái kết nối Supabase.
 
 ## Cài đặt lưu dữ liệu dùng chung (Supabase) — làm 1 lần
 

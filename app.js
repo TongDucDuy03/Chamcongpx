@@ -5246,34 +5246,6 @@
   }
 
   // ==========================================================================
-  // 11. TRUNG TÂM DEPLOY GITHUB PAGES 24/7 & MÃ QR ĐỘNG (SVG MATRIX)
-  // ==========================================================================
-
-  function renderDeployQrCode() {
-    const box = document.getElementById('deployQrSvgBox');
-    const input = document.getElementById('deployPublicUrlInput');
-    if (!box) return;
-    const urlStr = input && input.value ? input.value.trim() : window.location.href;
-    if (typeof window.qrcode !== 'function') {
-      box.innerHTML = '<div class="sub-meta-text" style="padding:1rem;">Chưa tải được mã QR (cần Internet). Hãy gửi đường dẫn bên dưới qua Zalo.</div>';
-      return;
-    }
-    try {
-      const qr = window.qrcode(0, 'M');
-      qr.addData(urlStr);
-      qr.make();
-      box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
-      const svg = box.querySelector('svg');
-      if (svg) {
-        svg.setAttribute('width', '200');
-        svg.setAttribute('height', '200');
-      }
-    } catch (_) {
-      box.innerHTML = '<div class="sub-meta-text" style="padding:1rem;">Đường dẫn quá dài để tạo mã QR.</div>';
-    }
-  }
-
-  // ==========================================================================
   // 12. ĐỒNG HỒ THỜI GIAN THỰC & ĐIỀU PHỐI PHÂN QUYỀN GIAO DIỆN
   // ==========================================================================
 
@@ -5378,7 +5350,6 @@
     renderLoginView();
     renderWorkerMobileView();
     renderAdminDashboard();
-    renderDeployQrCode();
   }
 
   // ==========================================================================
@@ -6051,20 +6022,7 @@
     });
     document.getElementById('btnSubmitNewEmployee')?.addEventListener('click', handleAddNewEmployee);
 
-    // 5. Sự kiện trong Phân khu 3 (Kết nối Cloud & Mã QR)
-    const updateGithubPagesUrlFromInputs = () => {
-      const user = (document.getElementById('ghUsernameInput')?.value || 'TongDucDuy03').trim();
-      const repo = (document.getElementById('ghRepoInput')?.value || 'Chamcongpx').trim();
-      const urlInput = document.getElementById('deployPublicUrlInput');
-      if (urlInput) {
-        urlInput.value = `https://${user}.github.io/${repo}/`;
-        renderDeployQrCode();
-      }
-    };
-    document.getElementById('ghUsernameInput')?.addEventListener('input', updateGithubPagesUrlFromInputs);
-    document.getElementById('ghRepoInput')?.addEventListener('input', updateGithubPagesUrlFromInputs);
-    document.getElementById('deployPublicUrlInput')?.addEventListener('input', renderDeployQrCode);
-
+    // 5. Sự kiện trong Phân khu 3 (Kết nối)
     document.getElementById('btnCopyDeployUrl')?.addEventListener('click', () => {
       const urlInput = document.getElementById('deployPublicUrlInput');
       if (urlInput) {
@@ -6073,7 +6031,6 @@
       }
     });
     document.getElementById('btnChangeAdminPwd')?.addEventListener('click', changeAdminPassword);
-    document.getElementById('btnPrintQrPoster')?.addEventListener('click', () => window.print());
   }
 
   // ==========================================================================
@@ -6637,7 +6594,7 @@
     }
   }
 
-  // ---- Khung trạng thái kết nối trong tab "Mã QR & Kết nối" ----
+  // ---- Khung trạng thái kết nối trong tab "Kết nối" ----
   function renderCloudStatus() {
     const badge = document.getElementById('cloudConnectionBadge');
     const box = document.getElementById('cloudStatusText');

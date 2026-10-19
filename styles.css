@@ -1277,7 +1277,7 @@ button, input, select, textarea {
 }
 
 /* ==========================================================================
-   7. TRUNG TÂM MÃ QR & MODAL
+   7. TAB KẾT NỐI & MODAL
    ========================================================================== */
 .deploy-grid {
   display: grid;
@@ -1290,27 +1290,6 @@ button, input, select, textarea {
   .deploy-grid {
     grid-template-columns: 1fr;
   }
-}
-
-.qr-display-box {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 1rem;
-  text-align: center;
-}
-
-.qr-svg-wrap {
-  width: 180px;
-  height: 180px;
-  margin: 0.65rem auto;
-  background: var(--bg-surface);
-  padding: 0.5rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .storage-layers-list {
@@ -2167,6 +2146,8 @@ tr.data-row.modified-after-lock td {
 /* Bảng công quản trị: cột tên nhân viên đủ rộng để không bị xuống dòng từng chữ */
 .emp-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center; }
 .emp-manage-table { min-width: 0 !important; }
+/* Bảng nhân sự không có dòng chữ cột A, B, C... phía trên nên tiêu đề dính sát mép trên (không lệch 27px che mất dòng 1) */
+.emp-manage-table .excel-table-header th { top: 0; }
 .emp-manage-table input.form-control { width: 100% !important; max-width: 150px; }
 #modalEmpListContainer { overflow-x: auto; }
 
