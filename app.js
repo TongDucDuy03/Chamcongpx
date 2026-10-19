@@ -30,6 +30,8 @@
   const DEVICE_WORKER_KEY = 'SMART_FACTORY_DEVICE_REMEMBERED_EMP_V30';
   const AUTH_SESSION_KEY = 'SMART_FACTORY_AUTH_SESSION_V35';
   const CHANNEL_NAME = 'SMART_FACTORY_OVERTIME_SYNC_V30';
+  // Nội dung công việc điền sẵn khi báo ngày mới (công nhân) hoặc thêm ca mới (quản đốc)
+  const DEFAULT_JOB_CONTENT = 'Làm theo kế hoạch';
 
   // Kết nối Supabase (điền trong config.js). Chưa điền thì app chạy chế độ thử, lưu trong trình duyệt.
   const APP_CONFIG = (typeof window !== 'undefined' && window.APP_CONFIG) || {};
@@ -2970,10 +2972,6 @@
       : state.selectedEmployeeName;
   }
 
-  function lastJobKey(empName) {
-    return `SMART_FACTORY_LAST_JOB::${empName}`;
-  }
-
   function syncJobChipsToInput() {
     const val = (document.getElementById('mobileJobContent')?.value || '').trim();
     document.querySelectorAll('#mobileJobChips .job-chip-btn').forEach((b) => {
@@ -2983,7 +2981,7 @@
 
   /**
    * Đưa form về trạng thái sạch: ngày hôm nay, chưa tích ca nào (tránh gửi nhầm),
-   * nội dung công việc điền sẵn theo lần báo gần nhất của chính người đó.
+   * nội dung công việc điền sẵn "Làm theo kế hoạch".
    */
   function resetWorkerForm(opts = {}) {
     const setVal = (id, v) => {
@@ -3013,11 +3011,7 @@
     setVal('restEnd', '15:15');
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
 
-    let lastJob = '';
-    try {
-      lastJob = localStorage.getItem(lastJobKey(currentWorkerName())) || '';
-    } catch (_) {}
-    setVal('mobileJobContent', lastJob);
+    setVal('mobileJobContent', DEFAULT_JOB_CONTENT);
     setVal('mobileNoteInput', '');
     const detailsEl = document.getElementById('slotDetails');
     if (detailsEl) detailsEl.open = true;
@@ -3634,9 +3628,6 @@
           serverTimestamp: authoritativeServerStr
         };
     playFeedbackSound(savedOffline ? 'ERROR' : 'SUCCESS');
-    try {
-      localStorage.setItem(lastJobKey(activeWorkerName), jobText);
-    } catch (_) {}
     clearEditHistoryFlag();
     resetWorkerForm();
     state.workerMobileSubTab = 'CALENDAR';
@@ -4428,10 +4419,7 @@
     }
     if (slotDefs.length === 0) return;
 
-    const existingJob =
-      beforeSummary.records[0]?.jobContent ||
-      state.records.find((r) => r.employeeName === empName && r.jobContent)?.jobContent ||
-      'Gia công & lắp ráp đơn hàng gấp tiến độ';
+    const existingJob = beforeSummary.records[0]?.jobContent || DEFAULT_JOB_CONTENT;
     const existingNote = beforeSummary.records[0]?.note || '';
     const isLocked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
     const nowServerStr = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
@@ -4804,7 +4792,7 @@
       if (title) title.textContent = prefillEmpName ? `Thêm Ca Tăng Ca — ${prefillEmpName} (${baseVnDate})` : 'Thêm Dòng Chi Tiết Tăng Ca Mới';
       if (idInput) idInput.value = '';
       if (empSelect && defEmp) empSelect.value = defEmp.name;
-      if (jobInput) jobInput.value = 'Gia công & hoàn thiện đơn hàng gấp';
+      if (jobInput) jobInput.value = DEFAULT_JOB_CONTENT;
       // Ngày nghỉ (Chủ nhật/Lễ) thường làm cả ngày 07:15–15:15, ngày thường mặc định ca Tối 1 giờ
       const defRange = isRestDayVn(baseVnDate) ? ADMIN_SHIFT_PRESETS.REST_8 : ADMIN_SHIFT_PRESETS.EVE_1;
       if (startInput) startInput.value = defRange[0];
