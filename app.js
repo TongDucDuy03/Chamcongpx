@@ -2553,14 +2553,14 @@
       if (mStart) mStart.value = '06:15';
       if (mEnd) mEnd.value = '07:15';
       if (lCheck) lCheck.checked = true;
-      if (lStart) lStart.value = '12:00';
-      if (lEnd) lEnd.value = '13:00';
+      if (lStart) lStart.value = '12:15';
+      if (lEnd) lEnd.value = '13:15';
       if (eCheck) eCheck.checked = false;
     } else if (comboCode === 'LUNCH1_EVE1') {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = true;
-      if (lStart) lStart.value = '12:00';
-      if (lEnd) lEnd.value = '13:00';
+      if (lStart) lStart.value = '12:15';
+      if (lEnd) lEnd.value = '13:15';
       if (eCheck) eCheck.checked = true;
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '18:15';
@@ -2630,7 +2630,7 @@
     const l = daily.lunchSlot;
     const e = daily.eveningSlot;
     const m1 = m.checked && m.startHm === '06:15' && m.endHm === '07:15';
-    const l1 = l.checked && l.startHm === '12:00' && l.endHm === '13:00';
+    const l1 = l.checked && l.startHm === '12:15' && l.endHm === '13:15';
     const l2 = l.checked && l.startHm === '11:15' && l.endHm === '13:15';
     const l15 = l.checked && l.startHm === '11:45' && l.endHm === '13:15';
     const e1 = e.checked && e.startHm === '17:15' && e.endHm === '18:15';
@@ -5691,7 +5691,7 @@
     document.getElementById('btnRestFull')?.addEventListener('click', () => setRestRange('07:15', '15:15'));
     document.getElementById('btnRestHalf')?.addEventListener('click', () => setRestRange('07:15', '11:15'));
 
-    // Nút chọn nhanh giờ Trưa (2h: 11:15-13:15 hoặc 1h: 12:00-13:00)
+    // Nút chọn nhanh giờ Trưa (2h: 11:15-13:15 hoặc 1h: 12:15-13:15)
     document.querySelectorAll('.slot-mini-btn[data-lunch-range]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const range = btn.getAttribute('data-lunch-range') || '11:15-13:15';
