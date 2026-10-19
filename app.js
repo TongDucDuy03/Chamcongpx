@@ -378,6 +378,7 @@
     activeExcelSheet: 'SHEET_MATRIX', // 'SHEET_MATRIX' | 'SHEET_OVERTIME' | 'SHEET_EMPLOYEES' | 'SHEET_GUIDE'
     showExcelGuideRows: true,
     matrixShowAllDays: false,
+    matrixOnlyPending: false,
     adminUnlocked: false,
 
     // Phiên đăng nhập & Phân quyền cô lập tài khoản
@@ -403,6 +404,8 @@
     formReturnTab: null, // tab quay về khi bấm Quay lại (CALENDAR | HISTORY)
     editingIso: '',
     formLoadedIso: '',
+    formLoadedJob: '',
+    formLoadedNote: '',
     mobileWorkerPickerOpen: false,
     mobileEntryMode: 'STANDARD',
     mobileWorkMode: 'Tăng ca tại công ty',
@@ -534,6 +537,32 @@
     const minute = Number(t[2] || 0);
     if (hour > 23 || minute > 59) return '';
     return `${vnDate} ${pad2(hour)}:${pad2(minute)}`;
+  }
+
+  /**
+   * Ghép ô chọn ngày (`YYYY-MM-DD`) + 2 ô giờ (`hh:mm`) của hộp thoại Admin thành giờ `dd/mm/yyyy hh:mm`.
+   * Giờ kết thúc không lớn hơn giờ bắt đầu nghĩa là ca qua đêm, kết thúc vào hôm sau. Trả về null nếu thiếu.
+   */
+  function composeAdminShiftTimes(isoDate, startHm, endHm) {
+    const sHm = String(startHm || '').slice(0, 5);
+    const eHm = String(endHm || '').slice(0, 5);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate || '') || !/^\d{2}:\d{2}$/.test(sHm) || !/^\d{2}:\d{2}$/.test(eHm)) {
+      return null;
+    }
+    const overnight = eHm <= sHm;
+    const startTime = `${isoDateToVnDate(isoDate)} ${sHm}`;
+    const endTime = `${isoDateToVnDate(overnight ? addDaysToIsoDate(isoDate, 1) : isoDate)} ${eHm}`;
+    const hours = Math.round(((parseVnDateTimeToMs(endTime) - parseVnDateTimeToMs(startTime)) / 3600000) * 100) / 100;
+    return { startTime, endTime, overnight, hours };
+  }
+
+  /**
+   * Tách giờ bắt đầu/kết thúc `dd/mm/yyyy hh:mm` của 1 dòng ra ô chọn ngày + 2 ô giờ
+   */
+  function splitShiftForPickers(startTime, endTime) {
+    const [sDate, sHm = ''] = (normalizeVnDateTime(startTime) || String(startTime || '').trim()).split(/\s+/);
+    const eHm = (normalizeVnDateTime(endTime, sDate) || String(endTime || '').trim()).split(/\s+/)[1] || '';
+    return { iso: vnDateToIsoDate(sDate), startHm: sHm.slice(0, 5), endHm: eHm.slice(0, 5) };
   }
 
   /**
@@ -1128,8 +1157,11 @@
 
   function approveSingleModAlert(alertKey) {
     const alertObj = state.dayModAlerts[alertKey];
-    if (!alertObj) return;
-    const { workDate, employeeName } = alertObj;
+    // Ô vàng có thể chỉ còn cờ sửa trên dòng ca mà thiếu bản ghi cảnh báo: lấy ngày & tên từ khóa `dd/mm/yyyy::Tên`
+    const [keyDate, keyEmp] = String(alertKey || '').split('::');
+    const workDate = alertObj ? alertObj.workDate : keyDate;
+    const employeeName = alertObj ? alertObj.employeeName : keyEmp;
+    if (!workDate || !employeeName) return;
     if (state.lockedDays[workDate]) {
       if (!state.lockedDays[workDate].snapshot) state.lockedDays[workDate].snapshot = {};
       const sum = getEmployeeDaySummary(employeeName, workDate);
@@ -1174,6 +1206,71 @@
     playFeedbackSound('SUCCESS');
     renderAll();
     showToast('Đã xác nhận tất cả các ô sửa đổi và bỏ bôi vàng.', 'success');
+  }
+
+  /**
+   * Các ô vàng (sửa sau chốt) trong tháng `monthKey` (yyyy-mm), kể cả ô chỉ còn cờ sửa trên dòng ca
+   */
+  function getPendingAlertsInMonth(monthKey) {
+    const [y, m] = String(monthKey || '').split('-');
+    const suffix = `/${m}/${y}`;
+    const byKey = {};
+    Object.entries(state.dayModAlerts || {}).forEach(([key, a]) => {
+      if (a && a.workDate && a.workDate.endsWith(suffix)) {
+        byKey[key] = { key, workDate: a.workDate, employeeName: a.employeeName, alert: a };
+      }
+    });
+    state.records.forEach((r) => {
+      const key = `${r.workDate}::${r.employeeName}`;
+      if (r.modifiedAfterLock && r.workDate && r.workDate.endsWith(suffix) && !byKey[key]) {
+        byKey[key] = { key, workDate: r.workDate, employeeName: r.employeeName, alert: null };
+      }
+    });
+    return Object.values(byKey);
+  }
+
+  /**
+   * Mô tả ngắn thay đổi giữa 2 chuỗi chi tiết ca (`17:15-18:15 (1h), ...`), theo từng buổi.
+   * VD: ['Tối 17:15–18:15 → 17:15–19:15', 'Thêm Trưa 11:15–13:15', 'Bỏ Sáng 06:15–07:15']
+   */
+  function describeDayChange(oldDetail, newDetail, isRest = false) {
+    const groupBySlot = (detail) => {
+      const out = {};
+      const re = /(\d{2}):(\d{2})-(\d{2}:\d{2})/g;
+      let m;
+      while ((m = re.exec(String(detail || '')))) {
+        const h = Number(m[1]);
+        const label = isRest ? 'Làm' : h < 10 ? 'Sáng' : h < 14 ? 'Trưa' : 'Tối';
+        (out[label] = out[label] || []).push(`${m[1]}:${m[2]}–${m[3]}`);
+      }
+      return out;
+    };
+    const before = groupBySlot(oldDetail);
+    const after = groupBySlot(newDetail);
+    const parts = [];
+    ['Sáng', 'Trưa', 'Tối', 'Làm'].forEach((label) => {
+      const b = (before[label] || []).join(' + ');
+      const a = (after[label] || []).join(' + ');
+      if (b === a) return;
+      if (b && a) parts.push(`${label} ${b} → ${a}`);
+      else if (a) parts.push(`Thêm ${label} ${a}`);
+      else parts.push(`Bỏ ${label} ${b}`);
+    });
+    return parts;
+  }
+
+  /**
+   * Trước/sau của 1 ô vàng để Quản đốc duyệt: `{ beforeCode, afterCode, changes: [...] }`
+   */
+  function getModAlertChange(empName, workDateVn) {
+    const alertObj = (state.dayModAlerts || {})[`${workDateVn}::${empName}`];
+    const snap = state.lockedDays?.[workDateVn]?.snapshot?.[empName];
+    const sum = getEmployeeDaySummary(empName, workDateVn);
+    const beforeCode = (alertObj && alertObj.beforeCode) || (snap && snap.code) || 'Đã chốt';
+    const beforeDetail = (alertObj && alertObj.oldDetail) || (snap && snap.detailStr) || '';
+    const changes = describeDayChange(beforeDetail, sum.detailStr, sum.isRest);
+    if (changes.length === 0 && beforeCode !== sum.codeLabel) changes.push('Đổi Giờ chốt, giờ làm giữ nguyên');
+    return { beforeCode, afterCode: sum.codeLabel, changes };
   }
 
   function loadLocalState() {
@@ -1444,7 +1541,7 @@
     );
   }
 
-  function updateSyncStatusUI() {
+  function updateSyncStatusUI(skipWorkerRender = false) {
     const pill = document.getElementById('syncStatusPill');
     const text = document.getElementById('syncStatusText');
     const phoneBadge = document.getElementById('phoneNetBadge');
@@ -1508,7 +1605,7 @@
       } else {
         // Trạng thái nút Lưu (khóa khi chưa chọn ca, nhãn theo ngày) do renderWorkerMobileView quyết định
         btnSubmit.classList.remove('locking-wait');
-        renderWorkerMobileView();
+        if (!skipWorkerRender) renderWorkerMobileView();
       }
     }
 
@@ -2495,6 +2592,13 @@
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '19:15';
       if (eOver) eOver.checked = false;
+    } else if (comboCode === 'ONLY_EVE1') {
+      if (mCheck) mCheck.checked = false;
+      if (lCheck) lCheck.checked = false;
+      if (eCheck) eCheck.checked = true;
+      if (eStart) eStart.value = '17:15';
+      if (eEnd) eEnd.value = '18:15';
+      if (eOver) eOver.checked = false;
     } else if (comboCode === 'ONLY_LUNCH2') {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = true;
@@ -2508,6 +2612,15 @@
       if (eStart) eStart.value = '17:15';
       if (eEnd) eEnd.value = '19:15';
       if (eOver) eOver.checked = false;
+    } else if (comboCode === 'MORN1_EVE1') {
+      if (mCheck) mCheck.checked = true;
+      if (mStart) mStart.value = '06:15';
+      if (mEnd) mEnd.value = '07:15';
+      if (lCheck) lCheck.checked = false;
+      if (eCheck) eCheck.checked = true;
+      if (eStart) eStart.value = '17:15';
+      if (eEnd) eEnd.value = '18:15';
+      if (eOver) eOver.checked = false;
     }
 
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
@@ -2516,6 +2629,28 @@
 
     renderWorkerMobileView();
   }
+
+  function detectMatchingMobileCombo(daily) {
+    if (!daily || daily.isRestDay) return '';
+    const m = daily.morningSlot;
+    const l = daily.lunchSlot;
+    const e = daily.eveningSlot;
+    const m1 = m.checked && m.startHm === '06:15' && m.endHm === '07:15';
+    const l2 = l.checked && l.startHm === '11:15' && l.endHm === '13:15';
+    const e1 = e.checked && e.startHm === '17:15' && e.endHm === '18:15';
+    const e2 = e.checked && e.startHm === '17:15' && e.endHm === '19:15';
+
+    if (m1 && l2 && e1) return 'FULL_615_1815';
+    if (m1 && l2 && e2) return 'FULL_615_1915';
+    if (!m.checked && l2 && e1) return 'LUNCH2_EVE1';
+    if (!m.checked && l2 && e2) return 'LUNCH2_EVE2';
+    if (!m.checked && !l.checked && e1) return 'ONLY_EVE1';
+    if (!m.checked && !l.checked && e2) return 'ONLY_EVE2';
+    if (!m.checked && l2 && !e.checked) return 'ONLY_LUNCH2';
+    if (m1 && !l.checked && e1) return 'MORN1_EVE1';
+    return '';
+  }
+
 
   /**
    * Nạp lại các ca tăng ca đã lưu của công nhân trong ngày được chọn lên Form để sửa nhanh
@@ -2607,6 +2742,9 @@
 
       document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
     }
+    // Nhớ nội dung/ghi chú vừa nạp: lúc lưu nếu công nhân không sửa thì mỗi ca giữ nội dung riêng Quản đốc đã chỉnh
+    state.formLoadedJob = jobInput ? jobInput.value.trim() : '';
+    state.formLoadedNote = noteInput ? noteInput.value.trim() : '';
 
     if (switchTabToForm) {
       state.workerMobileSubTab = 'FORM';
@@ -2708,13 +2846,46 @@
         : 'Không tăng ca tối';
     }
 
-    // Ngày dạng chữ (tránh nhầm khi máy hiển thị kiểu tháng/ngày)
+    // Ngày dạng chữ (tránh nhầm khi máy hiển thị kiểu tháng/ngày) & đánh dấu nút Hôm nay / Hôm qua
     const humanEl = document.getElementById('mobileDateHuman');
     if (humanEl && daily.isoDate) {
       const dn = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
       const dd = new Date(`${daily.isoDate}T00:00:00`);
       humanEl.textContent = isNaN(dd.getTime()) ? '' : `${dn[dd.getDay()]}, ${daily.workDate}`;
     }
+
+    const todayIso = localIsoToday();
+    const yesterdayIso = addDaysToIsoDate(todayIso, -1);
+    const btnToday = document.getElementById('btnDateToday');
+    const btnYesterday = document.getElementById('btnDateYesterday');
+    if (btnToday) {
+      btnToday.textContent = `Hôm nay (${isoDateToVnDate(todayIso).slice(0, 5)})`;
+      btnToday.classList.toggle('active', daily.isoDate === todayIso);
+    }
+    if (btnYesterday) {
+      btnYesterday.textContent = `Hôm qua (${isoDateToVnDate(yesterdayIso).slice(0, 5)})`;
+      btnYesterday.classList.toggle('active', daily.isoDate === yesterdayIso);
+    }
+
+    // Tự động đánh dấu nút Chọn nhanh tổ hợp ca nếu khớp
+    const matchedCombo = detectMatchingMobileCombo(daily);
+    document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
+      btn.classList.toggle('active', Boolean(matchedCombo) && btn.getAttribute('data-combo') === matchedCombo);
+    });
+
+    // Tự động đánh dấu nút giờ Trưa & giờ Tối
+    const lunchRangeStr = `${daily.lunchSlot.startHm}-${daily.lunchSlot.endHm}`;
+    document.querySelectorAll('.slot-mini-btn[data-lunch-range]').forEach((btn) => {
+      btn.classList.toggle('active', daily.lunchSlot.checked && btn.getAttribute('data-lunch-range') === lunchRangeStr);
+    });
+    document.querySelectorAll('.slot-mini-btn[data-eve-end]').forEach((btn) => {
+      btn.classList.toggle(
+        'active',
+        daily.eveningSlot.checked &&
+          daily.eveningSlot.startHm === '17:15' &&
+          btn.getAttribute('data-eve-end') === daily.eveningSlot.endHm
+      );
+    });
 
     // Cập nhật huy hiệu Ký hiệu công ngày (X+4)
     const dayCodeBadge = document.getElementById('mobileDayCodeBadge');
@@ -2862,7 +3033,7 @@
     setVal('mobileJobContent', lastJob);
     setVal('mobileNoteInput', '');
     const detailsEl = document.getElementById('slotDetails');
-    if (detailsEl) detailsEl.open = false;
+    if (detailsEl) detailsEl.open = true;
     syncJobChipsToInput();
 
     state.formReturnTab = null;
@@ -2952,20 +3123,37 @@
     const badgeEl = document.getElementById('historyEmpSummaryBadge');
     const tabCountEl = document.getElementById('workerHistoryTabCount');
     const listEl = document.getElementById('workerPersonalHistoryList');
+    const btnFilterMonth = document.getElementById('btnHistFilterMonth');
+    const btnFilterAll = document.getElementById('btnHistFilterAll');
 
     if (titleEl) titleEl.textContent = empName;
 
-    const myRecords = [
+    const allMyRecords = [
       ...state.offlineQueue.filter((r) => r.employeeName === empName).map((r) => ({ ...r, _isOffline: true })),
       ...state.records.filter((r) => r.employeeName === empName)
     ];
+
+    const activeMonthKey = /^\d{4}-\d{2}$/.test(state.calMonth || '') ? state.calMonth : localIsoToday().slice(0, 7);
+    const monthMyRecords = allMyRecords.filter((r) => isRecordInMonth(r, activeMonthKey));
+    const useMonthFilter = state.workerHistoryFilter !== 'ALL' && (monthMyRecords.length > 0 || allMyRecords.length === 0);
+    const myRecords = useMonthFilter ? monthMyRecords : allMyRecords;
+
+    if (btnFilterMonth) {
+      const [yStr, mStr] = activeMonthKey.split('-');
+      btnFilterMonth.textContent = `Tháng ${mStr}/${yStr} (${monthMyRecords.length} ca)`;
+      btnFilterMonth.classList.toggle('active', useMonthFilter);
+    }
+    if (btnFilterAll) {
+      btnFilterAll.textContent = `Tất cả (${allMyRecords.length} ca)`;
+      btnFilterAll.classList.toggle('active', !useMonthFilter);
+    }
 
     const totalHours = myRecords.reduce((sum, r) => sum + computeEstimatedHours(r), 0);
     if (badgeEl) {
       badgeEl.textContent = `${myRecords.length} ca • ${formatHoursClean(totalHours)} giờ`;
     }
     if (tabCountEl) {
-      tabCountEl.textContent = String(myRecords.length);
+      tabCountEl.textContent = String(allMyRecords.length);
     }
 
     if (!listEl) return;
@@ -3245,6 +3433,37 @@
     renderWorkerCalendar();
   }
 
+  /**
+   * Công nhân lưu lại một ngày đã có ca: ca giữ nguyên giờ thì giữ mã ca và những gì Quản đốc đã chỉnh
+   * (Giờ chốt, Loại tăng ca, Hình thức ca Sáng/Trưa). Ca đổi giờ thì Giờ chốt cũ không còn đúng nên bỏ.
+   * `loaded` = nội dung/ghi chú lúc nạp form ({ job, note }): công nhân không sửa thì mỗi ca giữ nội dung riêng.
+   */
+  function inheritAdminFieldsForResave(candidate, slotKey, oldDayRecords, usedIds, loaded = {}) {
+    const slotOf = (r) => {
+      if (slotKey === 'REST') return 'REST';
+      const h = Number(((r.startTime || '').split(' ')[1] || '').split(':')[0]);
+      if (r.workMode === 'Tăng ca trưa' || (h >= 11 && h <= 13)) return 'LUNCH';
+      return h < 11 ? 'MORNING' : 'EVENING';
+    };
+    const free = oldDayRecords.filter((r) => !usedIds.has(r.id));
+    const same = free.find((r) => r.startTime === candidate.startTime && r.endTime === candidate.endTime);
+    const old = same || free.find((r) => slotOf(r) === slotKey);
+    if (!old) return candidate;
+    usedIds.add(old.id);
+
+    const out = { ...candidate, overtimeType: old.overtimeType || candidate.overtimeType };
+    // Ca Tối công nhân tự chọn Hình thức trên form; các ca khác form gán cố định nên giữ lựa chọn của Quản đốc
+    if (slotKey !== 'EVENING' && old.workMode) out.workMode = old.workMode;
+    if (loaded.job !== undefined && candidate.jobContent === loaded.job && old.jobContent) out.jobContent = old.jobContent;
+    if (loaded.note !== undefined && candidate.note === loaded.note) out.note = old.note || '';
+    if (same) {
+      out.id = old.id;
+      out.overrideHours = old.overrideHours === undefined ? null : old.overrideHours;
+      if (old.createdAt) out.createdAt = old.createdAt;
+    }
+    return out;
+  }
+
   async function handleWorkerMobileSubmit() {
     if (state.authRole !== 'WORKER' && state.authRole !== 'ADMIN') {
       showToast('Vui lòng đăng nhập tài khoản trước khi gửi báo tăng ca!', 'warn');
@@ -3336,13 +3555,19 @@
       (r) => !(r.employeeName === activeWorkerName && r.workDate === daily.workDate)
     );
     const savedRecordsBackup = state.records;
+    const oldDayRecords = savedRecordsBackup.filter(
+      (r) => r.employeeName === activeWorkerName && r.workDate === daily.workDate
+    );
+    const usedOldIds = new Set();
+    const loadedText =
+      state.formLoadedIso === daily.isoDate ? { job: state.formLoadedJob, note: state.formLoadedNote } : {};
     state.records = [...otherRecords];
 
     const newValidatedRecords = [];
     for (let i = 0; i < daily.checkedSlots.length; i++) {
       const slot = daily.checkedSlots[i];
       const receiptId = 'ACK_' + String(nowServerMs + i).slice(-6);
-      const candidate = {
+      const candidate = inheritAdminFieldsForResave({
         employeeName: activeWorkerName,
         jobContent: jobText,
         startTime: slot.startTime,
@@ -3357,7 +3582,7 @@
         serverTimestamp: authoritativeServerStr,
         modifiedAfterLock: isDayLocked,
         modifiedAt: isDayLocked ? authoritativeServerStr : ''
-      };
+      }, slot.slotKey, oldDayRecords, usedOldIds, loadedText);
 
       const check = validateAndNormalizeRecord(candidate);
       if (!check.ok) {
@@ -3753,12 +3978,19 @@
         alertBanner.style.display = 'flex';
         const itemsHtml = modEntries
           .map(([, info]) => {
-            return `<span style="display:inline-block;background:#fef08a;border:1px solid #eab308;padding:0.12rem 0.5rem;border-radius:6px;margin-right:0.4rem;margin-top:0.2rem;font-weight:700;">
-              ${escapeHtml(info.employeeName)} (Ngày ${escapeHtml(info.workDate)}): <code>${escapeHtml(info.beforeCode)}</code> → <code>${escapeHtml(info.afterCode)}</code> (${escapeHtml(info.afterSlots || '0h')})
-            </span>`;
+            const ch = getModAlertChange(info.employeeName, info.workDate);
+            return `<button type="button" class="matrix-alert-chip" data-open-cell-emp="${escapeHtml(info.employeeName)}" data-open-cell-date="${escapeHtml(info.workDate)}" title="Bấm để xem và duyệt ô này">
+              <strong>${escapeHtml(info.employeeName)}</strong> • ${escapeHtml(String(info.workDate || '').slice(0, 5))}: <code>${escapeHtml(ch.beforeCode)}</code> → <code>${escapeHtml(ch.afterCode)}</code>
+              ${ch.changes.length ? `<span class="matrix-alert-chip-detail">${escapeHtml(ch.changes.join('; '))}</span>` : ''}
+            </button>`;
           })
           .join('');
-        alertDetail.innerHTML = `Phát hiện <strong>${modEntries.length} ô chấm công</strong> bị công nhân chỉnh sửa sau thời điểm chốt bảng công:<div>${itemsHtml}</div>`;
+        alertDetail.innerHTML = `Có <strong>${modEntries.length} ô chấm công</strong> bị sửa sau khi đã chốt. Bấm vào từng ô để xem trước/sau và duyệt:<div class="matrix-alert-chip-list">${itemsHtml}</div>`;
+        alertDetail.querySelectorAll('[data-open-cell-emp]').forEach((chip) => {
+          chip.addEventListener('click', () => {
+            openMatrixCellQuickModal(chip.getAttribute('data-open-cell-emp'), chip.getAttribute('data-open-cell-date'));
+          });
+        });
       } else {
         alertBanner.style.display = 'none';
       }
@@ -3774,7 +4006,31 @@
     if (monthInputEl && monthInputEl.value !== matrixMonth) monthInputEl.value = matrixMonth;
     const exportMonthEl = document.getElementById('exportMonthInput');
     if (exportMonthEl && exportMonthEl.value !== matrixMonth) exportMonthEl.value = matrixMonth;
-    if (state.matrixShowAllDays) {
+
+    // Bộ lọc "Chỉ hiện ô cần duyệt": chỉ giữ người & ngày có ô vàng trong tháng đang xem
+    const pendingInMonth = getPendingAlertsInMonth(matrixMonth);
+    if (pendingInMonth.length === 0) state.matrixOnlyPending = false;
+    const onlyPending = Boolean(state.matrixOnlyPending);
+    const pendingToggle = document.getElementById('toggleMatrixOnlyPending');
+    const pendingToggleText = document.getElementById('toggleMatrixOnlyPendingText');
+    const pendingToggleWrap = document.getElementById('toggleMatrixOnlyPendingWrap');
+    if (pendingToggle) {
+      pendingToggle.checked = onlyPending;
+      pendingToggle.disabled = pendingInMonth.length === 0;
+    }
+    if (pendingToggleText) {
+      pendingToggleText.textContent = pendingInMonth.length
+        ? `Chỉ hiện ô cần duyệt (${pendingInMonth.length})`
+        : 'Chỉ hiện ô cần duyệt (không có)';
+    }
+    if (pendingToggleWrap) pendingToggleWrap.classList.toggle('has-pending', pendingInMonth.length > 0);
+    const pendingEmpNames = new Set(pendingInMonth.map((p) => p.employeeName));
+
+    if (onlyPending) {
+      dateColumns = [...new Set(pendingInMonth.map((p) => p.workDate))].sort(
+        (a, b) => (parseVnDateTimeToMs(`${a} 00:00`) || 0) - (parseVnDateTimeToMs(`${b} 00:00`) || 0)
+      );
+    } else if (state.matrixShowAllDays) {
       const dim = new Date(mxYear, mxMonth, 0).getDate();
       for (let d = 1; d <= dim; d++) {
         dateColumns.push(`${pad2(d)}${monthSuffix}`);
@@ -3802,6 +4058,7 @@
     }
 
     // Render Header của bảng Matrix
+    const todayVnHeader = isoDateToVnDate(localIsoToday());
     thead.innerHTML = `
       <tr>
         <th style="width:42px;">STT</th>
@@ -3810,9 +4067,13 @@
           .map((dStr) => {
             const shortDate = dStr.slice(0, 5); // dd/mm
             const isLocked = Boolean(state.lockedDays && state.lockedDays[dStr]?.locked);
+            const isTodayCol = dStr === todayVnHeader;
+            const thCls = ['matrix-day-th'];
+            if (isLocked) thCls.push('locked-col');
+            if (isTodayCol) thCls.push('today-col');
             const restHead = isRestDayVn(dStr) ? `<div class="matrix-head-rest">${escapeHtml(getRestDayLabel(dStr))}</div>` : '';
             return `
-              <th style="min-width:96px;">
+              <th class="${thCls.join(' ')}" style="min-width:96px;">
                 <div style="font-size:0.8rem;font-weight:800;color:var(--text-main);">${escapeHtml(shortDate)}</div>
                 ${restHead}
                 <div style="font-size:0.65rem;color:var(--text-muted);font-weight:500;">${escapeHtml(dStr.slice(6))}</div>
@@ -3840,6 +4101,7 @@
     const filteredEmployees = state.employees.filter((emp) => {
       if (emp.endDate && emp.endDate < monthFirstIso) return false;
       if (emp.startDate && emp.startDate > monthLastIso) return false;
+      if (onlyPending && !pendingEmpNames.has(emp.name)) return false;
       if (state.adminFilterEmp !== 'ALL' && emp.name !== state.adminFilterEmp) return false;
       if (state.adminSearchQuery.trim()) {
         const q = state.adminSearchQuery.trim().toLowerCase();
@@ -3871,20 +4133,22 @@
             const alertKey = `${dStr}::${emp.name}`;
             const modAlert = state.dayModAlerts ? state.dayModAlerts[alertKey] : null;
             const hasModifiedRow = sum.records.some((r) => r.modifiedAfterLock);
+            const isTodayCell = dStr === todayVnHeader;
 
             if (modAlert || hasModifiedRow) {
-              const beforeCode = modAlert ? modAlert.beforeCode : 'Đã chốt';
-              const afterCode = modAlert ? modAlert.afterCode : sum.codeLabel;
+              const ch = getModAlertChange(emp.name, dStr);
+              const changeLines = ch.changes.slice(0, 2).map((c) => `<span class="matrix-change-line">${escapeHtml(c)}</span>`).join('');
+              const moreChanges = ch.changes.length > 2 ? `<span class="matrix-change-line">+${ch.changes.length - 2} thay đổi khác</span>` : '';
               return `
                 <td
                   class="matrix-cell modified-yellow-cell"
                   data-emp="${escapeHtml(emp.name)}"
                   data-date="${escapeHtml(dStr)}"
-                  title="Công nhân sửa sau khi chốt công: ${escapeHtml(beforeCode)} → ${escapeHtml(afterCode)} (${escapeHtml(sum.slotBreakdown || '0h')})"
+                  title="Sửa sau khi chốt công: ${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}${ch.changes.length ? `. ${escapeHtml(ch.changes.join('; '))}` : ''}. Bấm để xem/sửa nhanh."
                 >
                   <span class="matrix-code-pill">${escapeHtml(sum.totalHours > 0 ? sum.codeLabel : 'X (0h)')}</span>
-                  <span class="matrix-slot-sub">${escapeHtml(sum.slotBreakdown || 'Đã xóa ca')}</span>
-                  <span class="matrix-diff-tag">${escapeHtml(beforeCode)} → ${escapeHtml(afterCode)}</span>
+                  <span class="matrix-diff-tag">${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}</span>
+                  ${changeLines}${moreChanges}
                   <div>
                     <button
                       type="button"
@@ -3906,7 +4170,7 @@
                   class="matrix-cell has-overtime"
                   data-emp="${escapeHtml(emp.name)}"
                   data-date="${escapeHtml(dStr)}"
-                  title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: ${escapeHtml(sum.codeLabel)} (${escapeHtml(sum.slotBreakdown)})"
+                  title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: ${escapeHtml(sum.codeLabel)} (${escapeHtml(sum.slotBreakdown)}). Bấm để xem hoặc chỉnh nhanh."
                 >
                   <span class="matrix-code-pill">${escapeHtml(sum.codeLabel)}</span>
                   <span class="matrix-slot-sub">${escapeHtml(sum.slotBreakdown)}</span>
@@ -3918,14 +4182,14 @@
               return `<td class="matrix-cell off-col" title="${escapeHtml(emp.name)} chưa vào làm hoặc đã nghỉ việc"><span class="matrix-empty-dot">–</span></td>`;
             }
             if (sum.isRest) {
-              return `<td class="matrix-cell rest-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ"><span class="matrix-empty-dot">–</span></td>`;
+              return `<td class="matrix-cell rest-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ (Bấm để thêm ca nếu có đi làm)"><span class="matrix-empty-dot">–</span></td>`;
             }
             return `
               <td
-                class="matrix-cell"
+                class="matrix-cell${isTodayCell ? ' today-col-cell' : ''}"
                 data-emp="${escapeHtml(emp.name)}"
                 data-date="${escapeHtml(dStr)}"
-                title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: Công hành chính X (Không tăng ca)"
+                title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: Công hành chính X (Bấm để thêm nhanh ca tăng ca)"
               >
                 <span class="matrix-empty-dot">X</span>
               </td>
@@ -3979,31 +4243,275 @@
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const key = btn.getAttribute('data-approve-key');
-        const empName = btn.getAttribute('data-emp');
-        const dStr = btn.getAttribute('data-date');
-        if (key) {
-          approveSingleModAlert(key);
-          playFeedbackSound('SUCCESS');
-          showToast(
-            `Đã xác nhận thay đổi của <strong>${escapeHtml(empName || '')}</strong> ngày <strong>${escapeHtml(dStr || '')}</strong> &amp; bỏ bôi vàng!`,
-            'success'
-          );
-        }
+        if (key) approveSingleModAlert(key);
       });
     });
 
-    // Bấm vào ô có tăng ca -> lọc nhanh nhân viên đó ở Sheet 1 nếu người dùng muốn xem chi tiết dòng
-    tbody.querySelectorAll('.matrix-cell.has-overtime').forEach((cell) => {
-      cell.addEventListener('dblclick', () => {
+    // Bấm 1 chạm vào bất kỳ ô công nào (nhân viên, ngày) -> Mở hộp thoại Xem & Chỉnh Nhanh Ô Bảng Công
+    tbody.querySelectorAll('.matrix-cell[data-emp][data-date]').forEach((cell) => {
+      cell.addEventListener('click', (e) => {
+        if (e.target.closest('[data-approve-key]')) return;
         const empName = cell.getAttribute('data-emp');
-        if (empName) {
-          state.adminFilterEmp = empName;
-          state.activeExcelSheet = 'SHEET_OVERTIME';
-          renderAdminDashboard();
-          showToast(`Đang xem chi tiết các ca tăng ca của <strong>${escapeHtml(empName)}</strong>`, 'success');
+        const dStr = cell.getAttribute('data-date');
+        if (empName && dStr) {
+          openMatrixCellQuickModal(empName, dStr);
         }
       });
     });
+  }
+
+  /**
+   * Hộp thoại Xem & Chỉnh Nhanh 1 Ô Bảng Công (1-Click trên Bảng Ma Trận Quản Đốc)
+   */
+  function openMatrixCellQuickModal(empName, vnDate) {
+    state.quickCellEmp = empName;
+    state.quickCellDate = vnDate;
+    renderMatrixCellQuickModal();
+    document.getElementById('modalMatrixCellQuick')?.classList.add('open');
+  }
+
+  function renderMatrixCellQuickModal() {
+    const empName = state.quickCellEmp;
+    const vnDate = state.quickCellDate;
+    if (!empName || !vnDate) return;
+
+    const sum = getEmployeeDaySummary(empName, vnDate);
+    const iso = vnDateToIsoDate(vnDate);
+    const dn = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+    const dd = new Date(`${iso}T00:00:00`);
+    const dowLabel = isNaN(dd.getTime()) ? '' : `${dn[dd.getDay()]}, `;
+    const isLocked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
+    const alertKey = `${vnDate}::${empName}`;
+    const hasYellow = Boolean((state.dayModAlerts && state.dayModAlerts[alertKey]) || sum.records.some((r) => r.modifiedAfterLock));
+
+    const titleEl = document.getElementById('matrixQuickModalTitle');
+    const empEl = document.getElementById('matrixQuickEmpName');
+    const dateEl = document.getElementById('matrixQuickDateHuman');
+    const badgeEl = document.getElementById('matrixQuickCodeBadge');
+    const btnApprove = document.getElementById('btnMatrixQuickApproveYellow');
+    const listEl = document.getElementById('matrixQuickShiftsList');
+    const btnClear = document.getElementById('btnMatrixQuickClearDay');
+
+    if (titleEl) titleEl.textContent = `Chi tiết công ngày ${vnDate}`;
+    if (empEl) empEl.textContent = empName;
+    if (dateEl) {
+      dateEl.textContent = `${dowLabel}ngày ${vnDate}${getHolidayName(vnDate) ? ` (${getHolidayName(vnDate)})` : ''} • ${isLocked ? 'Đã chốt bảng công' : 'Đang mở'}`;
+    }
+    if (badgeEl) {
+      badgeEl.textContent = `${sum.codeLabel} (${formatHoursClean(sum.totalHours)} giờ)`;
+    }
+    if (btnApprove) {
+      btnApprove.style.display = hasYellow ? 'inline-flex' : 'none';
+    }
+    if (btnClear) {
+      btnClear.style.display = sum.records.length > 0 ? 'inline-flex' : 'none';
+    }
+    document.querySelectorAll('#modalMatrixCellQuick .rest-day-only').forEach((b) => {
+      b.style.display = sum.isRest ? '' : 'none';
+    });
+
+    // Ô vàng: ghi rõ trước khi sửa (lúc chốt) và bây giờ để Quản đốc duyệt
+    const changeBox = document.getElementById('matrixQuickChangeBox');
+    if (changeBox) {
+      if (hasYellow) {
+        const ch = getModAlertChange(empName, vnDate);
+        const alertObj = state.dayModAlerts && state.dayModAlerts[alertKey];
+        changeBox.style.display = 'block';
+        changeBox.innerHTML = `
+          <div class="matrix-quick-change-title">
+            Đã sửa sau khi chốt${alertObj && alertObj.modifiedAt ? ` (lúc ${escapeHtml(alertObj.modifiedAt)})` : ''}:
+            <code>${escapeHtml(ch.beforeCode)}</code> → <code>${escapeHtml(ch.afterCode)}</code>
+          </div>
+          ${ch.changes.length ? `<ul>${ch.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul>` : ''}
+          <div class="sub-meta-text">Đồng ý thì bấm "Xác nhận sửa đổi". Chưa đúng thì sửa lại các ca bên dưới rồi xác nhận.</div>
+        `;
+      } else {
+        changeBox.style.display = 'none';
+        changeBox.innerHTML = '';
+      }
+    }
+
+    if (!listEl) return;
+    if (sum.records.length === 0) {
+      listEl.innerHTML = `
+        <div style="padding: 0.9rem; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); color: var(--text-secondary); font-size: 0.83rem; text-align: center;">
+          Chưa có ca tăng ca nào trong ngày này (Ký hiệu <strong>${escapeHtml(sum.codeLabel)}</strong>).<br/>
+          Chọn nhanh tổ hợp ca ở dưới hoặc bấm <strong>"+ Thêm 1 ca tùy chỉnh"</strong>.
+        </div>
+      `;
+    } else {
+      listEl.innerHTML = sum.records
+        .map((rec) => {
+          const hrs = computeEstimatedHours(rec);
+          const sHm = (rec.startTime || '').split(' ')[1] || rec.startTime;
+          const eHm = (rec.endTime || '').split(' ')[1] || rec.endTime;
+          const isMod = Boolean(rec.modifiedAfterLock);
+          return `
+            <div class="matrix-quick-shift-card${isMod ? ' modified-yellow' : ''}">
+              <div style="flex: 1;">
+                <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+                  <strong style="font-family: var(--font-mono); font-size: 0.88rem; color: var(--text-main);">
+                    ${escapeHtml(sHm)} → ${escapeHtml(eHm)}
+                  </strong>
+                  <span class="badge-formula">${escapeHtml(rec.workMode)}</span>
+                  <strong style="color: var(--primary); font-size: 0.82rem;">+${formatHoursClean(hrs)}h</strong>
+                  ${isMod ? '<span class="matrix-diff-tag">Sửa sau chốt</span>' : ''}
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px;">
+                  ${escapeHtml(rec.jobContent)}${rec.note ? ` • <em>${escapeHtml(rec.note)}</em>` : ''}
+                </div>
+              </div>
+              <div style="display: flex; gap: 0.35rem; flex-shrink: 0;">
+                <button type="button" class="action-btn btn-quick-edit-shift" data-id="${escapeHtml(rec.id)}" style="padding: 0.25rem 0.55rem; font-size: 0.74rem;">
+                  Sửa
+                </button>
+                <button type="button" class="action-btn btn-quick-del-shift" data-id="${escapeHtml(rec.id)}" style="padding: 0.25rem 0.5rem; font-size: 0.74rem; color: var(--rose);">
+                  Xóa
+                </button>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      listEl.querySelectorAll('.btn-quick-edit-shift').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const recId = btn.getAttribute('data-id');
+          if (recId) openAdminEditOvertimeModal(recId);
+        });
+      });
+      listEl.querySelectorAll('.btn-quick-del-shift').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const recId = btn.getAttribute('data-id');
+          if (recId) deleteOvertimeRecordById(recId);
+        });
+      });
+    }
+  }
+
+  function applyAdminQuickCellCombo(empName, vnDate, comboCode) {
+    if (!empName || !vnDate) return;
+    const empObj = state.employees.find((e) => e.name === empName);
+    const defaultType = empObj ? empObj.defaultOvertimeType || 'Ngoài khoán' : 'Ngoài khoán';
+    const defaultMode = empObj ? empObj.defaultWorkMode || 'Tăng ca tại công ty' : 'Tăng ca tại công ty';
+
+    const beforeSummary = getEmployeeDaySummary(empName, vnDate);
+    if (comboCode === 'CLEAR') {
+      if (beforeSummary.records.length === 0) return;
+      if (!window.confirm(`Xóa hết ${beforeSummary.records.length} ca tăng ca ngày ${vnDate} của ${empName} (Về công X)?`)) {
+        return;
+      }
+      state.records = state.records.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
+      if (state.lockedDays && state.lockedDays[vnDate]?.locked) {
+        checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
+      }
+      saveLocalState(true);
+      syncWithCentralServer(true);
+      playFeedbackSound('SUCCESS');
+      renderAll();
+      renderMatrixCellQuickModal();
+      showToast(`Đã xóa tăng ca ngày <strong>${escapeHtml(vnDate)}</strong> của <strong>${escapeHtml(empName)}</strong> (Về công X).`, 'warn');
+      return;
+    }
+
+    const slotDefs = [];
+    if (comboCode === 'REST_8') {
+      slotDefs.push({ startHm: '07:15', endHm: '15:15', workMode: 'Tăng ca tại công ty' });
+    } else if (comboCode === 'ONLY_EVE1') {
+      slotDefs.push({ startHm: '17:15', endHm: '18:15', workMode: defaultMode });
+    } else if (comboCode === 'ONLY_LUNCH2') {
+      slotDefs.push({ startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' });
+    } else if (comboCode === 'ONLY_EVE2') {
+      slotDefs.push({ startHm: '17:15', endHm: '19:15', workMode: defaultMode });
+    } else if (comboCode === 'LUNCH2_EVE1') {
+      slotDefs.push(
+        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
+        { startHm: '17:15', endHm: '18:15', workMode: defaultMode }
+      );
+    } else if (comboCode === 'FULL_615_1815') {
+      slotDefs.push(
+        { startHm: '06:15', endHm: '07:15', workMode: 'Tăng ca tại công ty' },
+        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
+        { startHm: '17:15', endHm: '18:15', workMode: defaultMode }
+      );
+    } else if (comboCode === 'FULL_615_1915') {
+      slotDefs.push(
+        { startHm: '06:15', endHm: '07:15', workMode: 'Tăng ca tại công ty' },
+        { startHm: '11:15', endHm: '13:15', workMode: 'Tăng ca trưa' },
+        { startHm: '17:15', endHm: '19:15', workMode: defaultMode }
+      );
+    }
+    if (slotDefs.length === 0) return;
+
+    const existingJob =
+      beforeSummary.records[0]?.jobContent ||
+      state.records.find((r) => r.employeeName === empName && r.jobContent)?.jobContent ||
+      'Gia công & lắp ráp đơn hàng gấp tiến độ';
+    const existingNote = beforeSummary.records[0]?.note || '';
+    const isLocked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
+    const nowServerStr = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
+
+    const otherRecords = state.records.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
+    const backup = state.records;
+    state.records = [...otherRecords];
+
+    for (let i = 0; i < slotDefs.length; i++) {
+      const s = slotDefs[i];
+      const check = validateAndNormalizeRecord({
+        employeeName: empName,
+        jobContent: existingJob,
+        startTime: `${vnDate} ${s.startHm}`,
+        endTime: `${vnDate} ${s.endHm}`,
+        workDate: vnDate,
+        overrideHours: null,
+        overtimeType: defaultType,
+        workMode: s.workMode,
+        note: existingNote,
+        isDriverNoTime: false,
+        modifiedAfterLock: isLocked,
+        modifiedAt: isLocked ? nowServerStr : ''
+      });
+      if (!check.ok) {
+        state.records = backup;
+        playFeedbackSound('ERROR');
+        showToast(escapeHtml(check.reason), 'error');
+        return;
+      }
+      state.records.unshift(check.record);
+    }
+
+    if (isLocked) {
+      checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
+    }
+
+    saveLocalState(true);
+    syncWithCentralServer(true);
+    playFeedbackSound('SUCCESS');
+    renderAll();
+    renderMatrixCellQuickModal();
+    const afterSummary = getEmployeeDaySummary(empName, vnDate);
+    showToast(
+      `Đã đặt <strong>${escapeHtml(afterSummary.codeLabel)} (${formatHoursClean(afterSummary.totalHours)}h)</strong> ngày <strong>${escapeHtml(vnDate)}</strong> cho <strong>${escapeHtml(empName)}</strong>!`,
+      'success'
+    );
+  }
+
+  function copyEmployeeZaloCredentials(empName, customPass = '') {
+    const emp = state.employees.find((e) => e.name === empName);
+    if (!emp) return;
+    const urlInput = document.getElementById('deployPublicUrlInput');
+    const appUrl = (urlInput && urlInput.value ? urlInput.value.trim() : window.location.origin + window.location.pathname);
+    const username = emp.username || slugifyVietnamese(emp.name);
+    const pwd = customPass || (REMOTE_MODE ? '(Mật khẩu đã cấp / mặc định 123456)' : (emp.password || emp.pin || '123456'));
+    const text = [
+      `📌 Tài khoản Sổ Báo Tăng Ca — ${emp.name}`,
+      `• Đường dẫn: ${appUrl}`,
+      `• Tên đăng nhập: ${username}`,
+      `• Mật khẩu: ${pwd}`
+    ].join('\n');
+    navigator.clipboard?.writeText(text);
+    playFeedbackSound('SUCCESS');
+    showToast(`Đã sao chép thông tin đăng nhập của <strong>${escapeHtml(emp.name)}</strong> để dán gửi Zalo!`, 'success');
   }
 
   /**
@@ -4163,7 +4671,10 @@
           <td>${escapeHtml(emp.defaultOvertimeType)}</td>
           <td>${escapeHtml(emp.defaultWorkMode)}</td>
           <td style="text-align:center;font-weight:800;color:var(--primary);">${empRecs.length} ca (${formatHoursClean(totalHrs)}h)</td>
-          <td style="text-align:center;">
+          <td style="text-align:center;white-space:nowrap;">
+            <button type="button" class="action-btn btn-copy-zalo-s2" data-name="${escapeHtml(emp.name)}" style="padding:0.25rem 0.55rem;font-size:0.74rem;" title="Sao chép đường dẫn + tài khoản để gửi Zalo cho công nhân">
+              Copy Zalo
+            </button>
             <button type="button" class="action-btn" onclick="window.__openChangePinFromSheet2()" style="padding:0.25rem 0.6rem;font-size:0.74rem;">
               Sửa TK / MK
             </button>
@@ -4173,6 +4684,13 @@
     });
 
     tbody.innerHTML = html;
+
+    tbody.querySelectorAll('.btn-copy-zalo-s2').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const empName = btn.getAttribute('data-name');
+        if (empName) copyEmployeeZaloCredentials(empName);
+      });
+    });
   }
 
   window.__openChangePinFromSheet2 = function () {
@@ -4226,7 +4744,49 @@
   // 10. MODAL ADMIN THÊM / SỬA DÒNG TĂNG CA & QUẢN LÝ DANH SÁCH NHÂN VIÊN
   // ==========================================================================
 
-  function openAdminEditOvertimeModal(recordId = null) {
+  // Nút chọn nhanh ca trong hộp thoại Admin: [giờ bắt đầu, giờ kết thúc]
+  const ADMIN_SHIFT_PRESETS = {
+    MORN_1: ['06:15', '07:15'],
+    LUNCH_2: ['11:15', '13:15'],
+    EVE_1: ['17:15', '18:15'],
+    EVE_2: ['17:15', '19:15'],
+    EVE_3: ['17:15', '20:15'],
+    REST_8: ['07:15', '15:15']
+  };
+
+  /**
+   * Cập nhật dòng "Thứ ..., ngày ...", dòng tổng giờ (báo ca qua đêm) và nút ca đang khớp trong hộp thoại Admin
+   */
+  function refreshAdminTimePreview() {
+    const iso = document.getElementById('editOtDatePicker')?.value || '';
+    const sHm = (document.getElementById('editOtStartTime')?.value || '').slice(0, 5);
+    const eHm = (document.getElementById('editOtEndTime')?.value || '').slice(0, 5);
+    const vn = isoDateToVnDate(iso);
+    const humanEl = document.getElementById('editOtDateHuman');
+    if (humanEl) {
+      const dn = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+      const dd = new Date(`${iso}T00:00:00`);
+      humanEl.textContent = vn && !isNaN(dd.getTime())
+        ? `${dn[dd.getDay()]}, ${vn}${getHolidayName(vn) ? ` (${getHolidayName(vn)})` : ''}`
+        : 'Chưa chọn ngày';
+    }
+    const previewEl = document.getElementById('editOtTimePreview');
+    const t = composeAdminShiftTimes(iso, sHm, eHm);
+    if (previewEl) {
+      previewEl.classList.toggle('overnight', Boolean(t && t.overnight));
+      previewEl.innerHTML = t
+        ? `Tăng ca <strong>${formatHoursClean(t.hours)} giờ</strong>: ${escapeHtml(t.startTime)} → ${escapeHtml(t.endTime)}${
+            t.overnight ? ' <strong>(qua đêm, kết thúc sáng hôm sau)</strong>' : ''
+          }`
+        : 'Chọn ngày làm, giờ bắt đầu và giờ kết thúc.';
+    }
+    document.querySelectorAll('[data-admin-preset]').forEach((btn) => {
+      const range = ADMIN_SHIFT_PRESETS[btn.getAttribute('data-admin-preset')] || [];
+      btn.classList.toggle('active', range[0] === sHm && range[1] === eHm);
+    });
+  }
+
+  function openAdminEditOvertimeModal(recordId = null, prefillEmpName = null, prefillVnDate = null) {
     if (state.employees.length === 0) {
       showToast('Hãy thêm nhân viên trước (nút "Nhân sự & Tài khoản").', 'warn');
       return;
@@ -4236,9 +4796,10 @@
     const idInput = document.getElementById('editOtRecordId');
     const empSelect = document.getElementById('editOtEmployee');
     const jobInput = document.getElementById('editOtJobContent');
-    const startInput = document.getElementById('editOtStartStr');
-    const endInput = document.getElementById('editOtEndStr');
-    const dateInput = document.getElementById('editOtWorkDateStr');
+    const startInput = document.getElementById('editOtStartTime');
+    const endInput = document.getElementById('editOtEndTime');
+    const dateInput = document.getElementById('editOtWorkDateIso');
+    const datePicker = document.getElementById('editOtDatePicker');
     const overrideInput = document.getElementById('editOtOverrideHours');
     const typeSelect = document.getElementById('editOtType');
     const workModeSelect = document.getElementById('editOtWorkMode');
@@ -4249,22 +4810,24 @@
     const editingRec = recordId ? state.records.find((r) => r.id === recordId) : null;
     if (empSelect) {
       empSelect.innerHTML = state.employees
-        .filter((e) => isEmployeeCurrentlyActive(e) || (editingRec && editingRec.employeeName === e.name))
+        .filter((e) => isEmployeeCurrentlyActive(e) || (editingRec && editingRec.employeeName === e.name) || (prefillEmpName && prefillEmpName === e.name))
         .map((e) => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.name)}</option>`)
         .join('');
     }
 
     const existing = recordId ? state.records.find((r) => r.id === recordId) : null;
-    const todayVn = isoDateToVnDate(localIsoToday());
+    const baseVnDate = prefillVnDate || isoDateToVnDate(localIsoToday());
 
     if (existing) {
       if (title) title.textContent = `Chỉnh Sửa Dòng Tăng Ca — ${existing.employeeName}`;
       if (idInput) idInput.value = existing.id;
       if (empSelect) empSelect.value = existing.employeeName;
       if (jobInput) jobInput.value = existing.jobContent;
-      if (startInput) startInput.value = existing.startTime || `${todayVn} 17:15`;
-      if (endInput) endInput.value = existing.endTime || `${todayVn} 18:15`;
-      if (dateInput) dateInput.value = existing.workDate || todayVn;
+      const p = splitShiftForPickers(existing.startTime, existing.endTime);
+      if (datePicker) datePicker.value = p.iso || vnDateToIsoDate(existing.workDate || baseVnDate);
+      if (startInput) startInput.value = p.startHm || '17:15';
+      if (endInput) endInput.value = p.endHm || '18:15';
+      if (dateInput) dateInput.value = vnDateToIsoDate(existing.workDate) || (datePicker ? datePicker.value : '');
       if (overrideInput) {
         overrideInput.value =
           existing.overrideHours !== null && existing.overrideHours !== undefined
@@ -4277,14 +4840,20 @@
       if (delBtn) delBtn.style.display = 'inline-flex';
       if (timeBlock) timeBlock.style.display = 'block';
     } else {
-      const defEmp = state.employees.find((e) => isEmployeeCurrentlyActive(e)) || state.employees[0];
-      if (title) title.textContent = 'Thêm Dòng Chi Tiết Tăng Ca Mới';
+      const defEmp =
+        (prefillEmpName && state.employees.find((e) => e.name === prefillEmpName)) ||
+        state.employees.find((e) => isEmployeeCurrentlyActive(e)) ||
+        state.employees[0];
+      if (title) title.textContent = prefillEmpName ? `Thêm Ca Tăng Ca — ${prefillEmpName} (${baseVnDate})` : 'Thêm Dòng Chi Tiết Tăng Ca Mới';
       if (idInput) idInput.value = '';
       if (empSelect && defEmp) empSelect.value = defEmp.name;
       if (jobInput) jobInput.value = 'Gia công & hoàn thiện đơn hàng gấp';
-      if (startInput) startInput.value = `${todayVn} 17:15`;
-      if (endInput) endInput.value = `${todayVn} 18:15`;
-      if (dateInput) dateInput.value = todayVn;
+      // Ngày nghỉ (Chủ nhật/Lễ) thường làm cả ngày 07:15–15:15, ngày thường mặc định ca Tối 1 giờ
+      const defRange = isRestDayVn(baseVnDate) ? ADMIN_SHIFT_PRESETS.REST_8 : ADMIN_SHIFT_PRESETS.EVE_1;
+      if (startInput) startInput.value = defRange[0];
+      if (endInput) endInput.value = defRange[1];
+      if (datePicker) datePicker.value = vnDateToIsoDate(baseVnDate);
+      if (dateInput) dateInput.value = vnDateToIsoDate(baseVnDate);
       if (overrideInput) overrideInput.value = '';
       if (typeSelect) typeSelect.value = defEmp ? defEmp.defaultOvertimeType : 'Ngoài khoán';
       if (workModeSelect) workModeSelect.value = defEmp ? defEmp.defaultWorkMode : 'Tăng ca tại công ty';
@@ -4292,23 +4861,69 @@
       if (delBtn) delBtn.style.display = 'none';
       if (timeBlock) timeBlock.style.display = 'block';
     }
+    // Ngày tính công đi theo Ngày làm khi đổi ngày (trừ khi đã được chọn riêng)
+    if (datePicker) datePicker.dataset.prev = datePicker.value;
+    refreshAdminTimePreview();
 
     if (modal) modal.classList.add('open');
   }
 
+  /**
+   * Kiểm tra & lưu 1 dòng Admin thêm/sửa vào state. Ngày đã chốt bị đổi thì bôi vàng, kể cả ngày cũ
+   * khi dòng bị chuyển sang ngày khác hoặc sang người khác. Trả về kết quả của validateAndNormalizeRecord.
+   */
+  function commitAdminRecordEdit(rawCandidate, idVal = null) {
+    const original = idVal ? state.records.find((r) => r.id === idVal) : null;
+    const raw = original
+      ? { ...rawCandidate, createdAt: original.createdAt, receiptId: original.receiptId, serverTimestamp: original.serverTimestamp }
+      : rawCandidate;
+    const check = validateAndNormalizeRecord(raw, idVal || null);
+    if (!check.ok) return check;
+
+    const rec = check.record;
+    const isLockedDay = (d) => Boolean(state.lockedDays && state.lockedDays[d]?.locked);
+    const touchedDays = [{ emp: rec.employeeName, date: rec.workDate }];
+    if (original && (original.employeeName !== rec.employeeName || original.workDate !== rec.workDate)) {
+      touchedDays.push({ emp: original.employeeName, date: original.workDate });
+    }
+    touchedDays.forEach((d) => {
+      d.before = getEmployeeDaySummary(d.emp, d.date);
+    });
+
+    if (isLockedDay(rec.workDate)) {
+      rec.modifiedAfterLock = true;
+      rec.modifiedAt = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
+    }
+    const idx = original ? state.records.indexOf(original) : -1;
+    if (idx !== -1) state.records[idx] = rec;
+    else state.records.unshift(rec);
+
+    touchedDays.forEach((d) => {
+      if (isLockedDay(d.date)) checkAndTriggerPostLockAlert(d.emp, d.date, d.before);
+    });
+    return check;
+  }
+
   function saveAdminOvertimeModal() {
     const idVal = document.getElementById('editOtRecordId')?.value || null;
-    const empName = document.getElementById('editOtEmployee')?.value;
-    const workDateVal = document.getElementById('editOtWorkDateStr')?.value;
-    const beforeSummary = empName && workDateVal ? getEmployeeDaySummary(empName, workDateVal) : null;
+    const times = composeAdminShiftTimes(
+      document.getElementById('editOtDatePicker')?.value,
+      document.getElementById('editOtStartTime')?.value,
+      document.getElementById('editOtEndTime')?.value
+    );
+    if (!times) {
+      playFeedbackSound('ERROR');
+      showToast('Hãy chọn đủ Ngày làm, Giờ bắt đầu và Giờ kết thúc.', 'error');
+      return;
+    }
 
     const rawCandidate = {
       id: idVal || undefined,
-      employeeName: empName,
+      employeeName: document.getElementById('editOtEmployee')?.value,
       jobContent: document.getElementById('editOtJobContent')?.value,
-      startTime: document.getElementById('editOtStartStr')?.value,
-      endTime: document.getElementById('editOtEndStr')?.value,
-      workDate: workDateVal,
+      startTime: times.startTime,
+      endTime: times.endTime,
+      workDate: isoDateToVnDate(document.getElementById('editOtWorkDateIso')?.value || '') || times.startTime.split(' ')[0],
       overrideHours: document.getElementById('editOtOverrideHours')?.value,
       overtimeType: document.getElementById('editOtType')?.value,
       workMode: document.getElementById('editOtWorkMode')?.value,
@@ -4316,7 +4931,7 @@
       isDriverNoTime: false
     };
 
-    const check = validateAndNormalizeRecord(rawCandidate, idVal || null);
+    const check = commitAdminRecordEdit(rawCandidate, idVal);
     if (!check.ok) {
       playFeedbackSound('ERROR');
       if (check.isOverlapError) {
@@ -4327,28 +4942,14 @@
       return;
     }
 
-    const isLocked = Boolean(state.lockedDays && state.lockedDays[check.record.workDate]?.locked);
-    if (isLocked) {
-      check.record.modifiedAfterLock = true;
-      check.record.modifiedAt = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
-    }
-
-    if (idVal) {
-      const idx = state.records.findIndex((r) => r.id === idVal);
-      if (idx !== -1) state.records[idx] = check.record;
-    } else {
-      state.records.unshift(check.record);
-    }
-
-    if (isLocked && beforeSummary) {
-      checkAndTriggerPostLockAlert(check.record.employeeName, check.record.workDate, beforeSummary);
-    }
-
     saveLocalState(true);
     syncWithCentralServer(true);
     document.getElementById('modalEditOvertime')?.classList.remove('open');
     playFeedbackSound('SUCCESS');
     renderAll();
+    if (document.getElementById('modalMatrixCellQuick')?.classList.contains('open')) {
+      renderMatrixCellQuickModal();
+    }
     showToast(`Đã lưu dòng tăng ca của <strong>${escapeHtml(check.record.employeeName)}</strong>!`, 'success');
   }
 
@@ -4376,6 +4977,9 @@
     syncWithCentralServer(true);
     document.getElementById('modalEditOvertime')?.classList.remove('open');
     renderAll();
+    if (document.getElementById('modalMatrixCellQuick')?.classList.contains('open')) {
+      renderMatrixCellQuickModal();
+    }
     showToast(`Đã xóa dòng tăng ca của <strong>${escapeHtml(removed.employeeName)}</strong>`, 'warn');
   }
 
@@ -4438,6 +5042,9 @@
                 <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
                   Lưu
                 </button>
+                <button type="button" class="action-btn btn-copy-emp-zalo" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;" title="Copy tin nhắn Zalo gửi tài khoản cho công nhân">
+                  Copy Zalo
+                </button>
                 ${
                   e.endDate
                     ? `<button type="button" class="action-btn btn-rehire-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Đi làm lại</button>`
@@ -4456,6 +5063,14 @@
         </tbody>
       </table>
     `;
+
+    container.querySelectorAll('.btn-copy-emp-zalo').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-name');
+        const passEl = container.querySelector(`.emp-password-inline-input[data-name="${CSS.escape(target)}"]`);
+        copyEmployeeZaloCredentials(target, (passEl?.value || '').trim());
+      });
+    });
 
     container.querySelectorAll('.btn-save-emp-cred').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -4759,7 +5374,7 @@
     if (bDeploy) bDeploy.classList.toggle('active', state.activeMainTab === 'DEPLOY_HUB');
 
     updateHeaderSessionBar();
-    updateSyncStatusUI();
+    updateSyncStatusUI(true);
     renderLoginView();
     renderWorkerMobileView();
     renderAdminDashboard();
@@ -4900,6 +5515,14 @@
     document.getElementById('tabBtnDeployHub')?.addEventListener('click', () => switchMainTab('DEPLOY_HUB'));
 
     document.getElementById('btnDemoResetData')?.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Khôi phục dữ liệu mẫu mặc định sẽ ghi đè danh sách nhân viên và các ca tăng ca hiện tại trên máy.\n\nBạn có chắc chắn muốn khôi phục dữ liệu mẫu?'
+        )
+      ) {
+        return;
+      }
+      document.querySelectorAll('details.admin-more-menu').forEach((d) => (d.open = false));
       state.employees = JSON.parse(JSON.stringify(DEFAULT_EMPLOYEES));
       state.records = JSON.parse(JSON.stringify(DEFAULT_OVERTIME_RECORDS));
       state.offlineQueue = [];
@@ -4916,6 +5539,17 @@
       showToast('Đã khôi phục dữ liệu mẫu chuẩn (Ký hiệu X+4, chốt công ngày 15/10/2026)!', 'success');
     });
 
+    // Tự động đóng menu "Hệ thống ▾" khi bấm ra ngoài hoặc bấm vào 1 nút bên trong
+    document.addEventListener('click', (e) => {
+      document.querySelectorAll('details.admin-more-menu[open]').forEach((menu) => {
+        if (!menu.contains(e.target) || e.target.closest('.admin-more-dropdown .action-btn')) {
+          setTimeout(() => {
+            menu.open = false;
+          }, 50);
+        }
+      });
+    });
+
     // 2. Sự kiện trong Phân khu 1 (Báo tăng ca cá nhân của Công nhân)
     document.getElementById('btnWorkerSubTabForm')?.addEventListener('click', () => {
       state.workerMobileSubTab = 'FORM';
@@ -4926,6 +5560,15 @@
     document.getElementById('btnWorkerSubTabHistory')?.addEventListener('click', () => {
       state.lastServerAckReceipt = null;
       leaveEditMode('HISTORY');
+    });
+
+    document.getElementById('btnHistFilterMonth')?.addEventListener('click', () => {
+      state.workerHistoryFilter = 'MONTH';
+      renderWorkerPersonalHistory(currentWorkerName());
+    });
+    document.getElementById('btnHistFilterAll')?.addEventListener('click', () => {
+      state.workerHistoryFilter = 'ALL';
+      renderWorkerPersonalHistory(currentWorkerName());
     });
 
     document.getElementById('btnWorkerSubTabCalendar')?.addEventListener('click', () => {
@@ -5025,7 +5668,6 @@
       'slotEveningWorkMode'
     ].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', () => {
-        document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
         renderWorkerMobileView();
       });
       document.getElementById(id)?.addEventListener('input', () => {
@@ -5060,7 +5702,6 @@
         if (lCheck) lCheck.checked = true;
         if (lStart && s) lStart.value = s;
         if (lEnd && e) lEnd.value = e;
-        document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
         renderWorkerMobileView();
       });
     });
@@ -5077,12 +5718,11 @@
         if (eStart && !eStart.value) eStart.value = '17:15';
         if (eEnd) eEnd.value = endHm;
         if (eOver) eOver.checked = false;
-        document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
         renderWorkerMobileView();
       });
     });
 
-    // Chọn nhanh chip gợi ý Nội dung công việc (Cột B)
+    // Chọn nhanh chip gợi ý Nội dung công việc (Cột B) & nút Xóa nhanh
     document.querySelectorAll('#mobileJobChips .job-chip-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('#mobileJobChips .job-chip-btn').forEach((b) => b.classList.remove('active'));
@@ -5090,6 +5730,15 @@
         const jobInput = document.getElementById('mobileJobContent');
         if (jobInput) jobInput.value = btn.getAttribute('data-job') || '';
       });
+    });
+
+    document.getElementById('btnClearMobileJob')?.addEventListener('click', () => {
+      const jobInput = document.getElementById('mobileJobContent');
+      if (jobInput) {
+        jobInput.value = '';
+        syncJobChipsToInput();
+        jobInput.focus();
+      }
     });
 
     document.getElementById('mobileJobContent')?.addEventListener('input', syncJobChipsToInput);
@@ -5139,6 +5788,14 @@
       );
     });
 
+    const shiftAdminMonth = (delta) => {
+      const [y, m] = getSelectedMonthKey().split('-').map(Number);
+      const d = new Date(y, m - 1 + delta, 1);
+      setSelectedMonth(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+    };
+    document.getElementById('btnAdminMonthPrev')?.addEventListener('click', () => shiftAdminMonth(-1));
+    document.getElementById('btnAdminMonthNext')?.addEventListener('click', () => shiftAdminMonth(1));
+
     ['matrixMonthInput', 'exportMonthInput'].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', (e) => {
         if (e.target.value) setSelectedMonth(e.target.value);
@@ -5149,12 +5806,12 @@
       state.matrixShowAllDays = Boolean(e.target.checked);
       renderExcelMatrixSheet();
     });
-
-    document.getElementById('btnApproveAllModAlerts')?.addEventListener('click', () => {
-      approveAllModAlerts();
-      playFeedbackSound('SUCCESS');
-      showToast('Đã xác nhận toàn bộ các ca chỉnh sửa sau chốt và bỏ bôi vàng!', 'success');
+    document.getElementById('toggleMatrixOnlyPending')?.addEventListener('change', (e) => {
+      state.matrixOnlyPending = Boolean(e.target.checked);
+      renderExcelMatrixSheet();
     });
+
+    document.getElementById('btnApproveAllModAlerts')?.addEventListener('click', approveAllModAlerts);
 
     document.getElementById('btnUnlockAdminPin')?.addEventListener('click', async () => {
       const val = document.getElementById('adminPinInput')?.value || '';
@@ -5296,12 +5953,42 @@
     });
     document.getElementById('btnSaveEditOt')?.addEventListener('click', saveAdminOvertimeModal);
 
-    // Ô giờ trong hộp thoại admin: rời ô thì tự chuyển 6:15 / 6h15 thành dạng chuẩn 16/10/2026 06:15
-    const otStartEl = document.getElementById('editOtStartStr');
-    const otEndEl = document.getElementById('editOtEndStr');
-    const otDateEl = document.getElementById('editOtWorkDateStr');
-    const otStartValue = () => normalizeVnDateTime(otStartEl?.value, normalizeVnDate(otDateEl?.value));
-    // Thêm dòng mới: đổi nhân viên thì Loại / Hình thức tăng ca theo mặc định của người đó
+    // Sự kiện Modal Xem & Chỉnh Nhanh Ô Bảng Công (#modalMatrixCellQuick)
+    const closeMatrixQuickModal = () => {
+      document.getElementById('modalMatrixCellQuick')?.classList.remove('open');
+    };
+    document.getElementById('btnCloseMatrixQuickModal')?.addEventListener('click', closeMatrixQuickModal);
+    document.getElementById('btnDoneMatrixQuickModal')?.addEventListener('click', closeMatrixQuickModal);
+    document.getElementById('btnMatrixQuickApproveYellow')?.addEventListener('click', () => {
+      if (!state.quickCellEmp || !state.quickCellDate) return;
+      approveSingleModAlert(`${state.quickCellDate}::${state.quickCellEmp}`);
+      renderMatrixCellQuickModal();
+    });
+    document.getElementById('btnMatrixQuickClearDay')?.addEventListener('click', () => {
+      applyAdminQuickCellCombo(state.quickCellEmp, state.quickCellDate, 'CLEAR');
+    });
+    document.querySelectorAll('[data-quick-cell-combo]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const combo = btn.getAttribute('data-quick-cell-combo');
+        if (combo) applyAdminQuickCellCombo(state.quickCellEmp, state.quickCellDate, combo);
+      });
+    });
+    document.getElementById('btnMatrixQuickAddShift')?.addEventListener('click', () => {
+      openAdminEditOvertimeModal(null, state.quickCellEmp, state.quickCellDate);
+    });
+    document.getElementById('btnMatrixQuickJumpSheet1')?.addEventListener('click', () => {
+      if (!state.quickCellEmp) return;
+      state.adminFilterEmp = state.quickCellEmp;
+      state.activeExcelSheet = 'SHEET_OVERTIME';
+      closeMatrixQuickModal();
+      renderAdminDashboard();
+      showToast(`Đang xem các ca của <strong>${escapeHtml(state.quickCellEmp)}</strong> ở tab Chi tiết ca.`, 'success');
+    });
+
+    // Ô chọn ngày/giờ & nút chọn nhanh ca trong hộp thoại Admin (#modalEditOvertime)
+    const otDatePicker = document.getElementById('editOtDatePicker');
+    const otWorkDateEl = document.getElementById('editOtWorkDateIso');
+
     document.getElementById('editOtEmployee')?.addEventListener('change', (e) => {
       if (document.getElementById('editOtRecordId')?.value) return;
       const emp = state.employees.find((x) => x.name === e.target.value);
@@ -5311,26 +5998,39 @@
       if (typeSel) typeSel.value = emp.defaultOvertimeType || 'Ngoài khoán';
       if (modeSel) modeSel.value = emp.defaultWorkMode || 'Tăng ca tại công ty';
     });
-    otDateEl?.addEventListener('change', () => {
-      const v = normalizeVnDate(otDateEl.value);
-      if (v) otDateEl.value = v;
-    });
-    otStartEl?.addEventListener('focus', () => {
-      otStartEl.dataset.prevDate = otStartValue().split(' ')[0];
-    });
-    otStartEl?.addEventListener('change', () => {
-      const v = otStartValue();
-      if (!v) return;
-      otStartEl.value = v;
-      // Ngày tính công đang theo ngày bắt đầu cũ thì đổi theo luôn
-      if (otDateEl && (!otDateEl.value.trim() || normalizeVnDate(otDateEl.value) === otStartEl.dataset.prevDate)) {
-        otDateEl.value = v.split(' ')[0];
+
+    otDatePicker?.addEventListener('change', () => {
+      if (otWorkDateEl && (!otWorkDateEl.value || otWorkDateEl.value === otDatePicker.dataset.prev)) {
+        otWorkDateEl.value = otDatePicker.value;
       }
-      otStartEl.dataset.prevDate = v.split(' ')[0];
+      otDatePicker.dataset.prev = otDatePicker.value;
+      refreshAdminTimePreview();
     });
-    otEndEl?.addEventListener('change', () => {
-      const v = normalizeVnDateTime(otEndEl.value, otStartValue().split(' ')[0]);
-      if (v) otEndEl.value = v;
+    ['editOtStartTime', 'editOtEndTime'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('input', refreshAdminTimePreview);
+      document.getElementById(id)?.addEventListener('change', refreshAdminTimePreview);
+    });
+
+    document.querySelectorAll('[data-admin-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const code = btn.getAttribute('data-admin-preset');
+        const range = ADMIN_SHIFT_PRESETS[code];
+        if (!range) return;
+        const startEl = document.getElementById('editOtStartTime');
+        const endEl = document.getElementById('editOtEndTime');
+        if (startEl) startEl.value = range[0];
+        if (endEl) endEl.value = range[1];
+        const modeSel = document.getElementById('editOtWorkMode');
+        if (modeSel && code === 'LUNCH_2') {
+          modeSel.value = 'Tăng ca trưa';
+        } else if (modeSel && modeSel.value === 'Tăng ca trưa') {
+          // Chuyển từ ca Trưa sang ca khác: trả Hình thức về mặc định của nhân viên
+          const emp = state.employees.find((x) => x.name === document.getElementById('editOtEmployee')?.value);
+          const def = emp && emp.defaultWorkMode;
+          modeSel.value = def && def !== 'Tăng ca trưa' ? def : 'Tăng ca tại công ty';
+        }
+        refreshAdminTimePreview();
+      });
     });
     document.getElementById('btnDeleteOtRecord')?.addEventListener('click', () => {
       const idVal = document.getElementById('editOtRecordId')?.value;
@@ -5374,8 +6074,6 @@
     });
     document.getElementById('btnChangeAdminPwd')?.addEventListener('click', changeAdminPassword);
     document.getElementById('btnPrintQrPoster')?.addEventListener('click', () => window.print());
-
-
   }
 
   // ==========================================================================

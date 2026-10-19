@@ -241,21 +241,29 @@
                   <div class="time-preset-title"><span>Trưa 2h + Tối 2h</span><strong>X+4</strong></div>
                   <div class="time-preset-range">11h15–13h15 &amp; 17h15–19h15</div>
                 </button>
+                <button type="button" class="time-preset-btn" data-combo="ONLY_EVE1">
+                  <div class="time-preset-title"><span>Chỉ Tối 1h</span><strong>X+1</strong></div>
+                  <div class="time-preset-range">17:15 – 18:15 (1 giờ)</div>
+                </button>
+                <button type="button" class="time-preset-btn" data-combo="ONLY_EVE2">
+                  <div class="time-preset-title"><span>Chỉ Tối 2h</span><strong>X+2</strong></div>
+                  <div class="time-preset-range">17:15 – 19:15 (2 giờ)</div>
+                </button>
                 <button type="button" class="time-preset-btn" data-combo="ONLY_LUNCH2">
                   <div class="time-preset-title"><span>Chỉ tăng ca Trưa</span><strong>X+2</strong></div>
                   <div class="time-preset-range">11:15 – 13:15 (2 giờ)</div>
                 </button>
-                <button type="button" class="time-preset-btn" data-combo="ONLY_EVE2">
-                  <div class="time-preset-title"><span>Chỉ tăng ca Tối</span><strong>X+2</strong></div>
-                  <div class="time-preset-range">17:15 – 19:15 (2 giờ)</div>
+                <button type="button" class="time-preset-btn" data-combo="MORN1_EVE1">
+                  <div class="time-preset-title"><span>Sáng 1h + Tối 1h</span><strong>X+2</strong></div>
+                  <div class="time-preset-range">06:15–07:15 &amp; 17:15–18:15</div>
                 </button>
               </div>
             </div>
 
             <!-- 3. TÍCH CHỌN / CHỈNH GIỜ TỪNG BUỔI (SÁNG • TRƯA • TỐI) -->
-            <details id="slotDetails" class="form-section normal-day-only slot-details">
+            <details id="slotDetails" class="form-section normal-day-only slot-details" open>
               <summary class="section-label-row">
-                <span class="section-label">3. Chỉnh giờ từng buổi (nếu cần)</span>
+                <span class="section-label">3. Tích chọn / chỉnh giờ từng buổi</span>
                 <span id="mobileEstHoursBadge" class="sub-meta-text">X (0 giờ)</span>
               </summary>
 
@@ -394,13 +402,16 @@
                 <button type="button" class="job-chip-btn" data-job="Lắp đặt &amp; xử lý kỹ thuật tại công trường">Lắp đặt công trường</button>
                 <button type="button" class="job-chip-btn" data-job="Trực xử lý kỹ thuật &amp; bàn giao ca">Trực kỹ thuật</button>
               </div>
-              <input
-                type="text"
-                id="mobileJobContent"
-                class="form-control"
-                placeholder="Chọn gợi ý trên hoặc tự nhập công việc..."
-                value="Gia công &amp; lắp ráp đơn hàng gấp tiến độ"
-              />
+              <div class="input-clear-wrap">
+                <input
+                  type="text"
+                  id="mobileJobContent"
+                  class="form-control"
+                  placeholder="Chọn gợi ý trên hoặc tự nhập công việc..."
+                  value="Gia công &amp; lắp ráp đơn hàng gấp tiến độ"
+                />
+                <button type="button" id="btnClearMobileJob" class="btn-clear-input" title="Xóa nhanh để tự gõ nội dung mới" aria-label="Xóa nội dung công việc">&times;</button>
+              </div>
             </div>
 
             <div class="form-section" style="margin-bottom: 0.85rem;">
@@ -413,20 +424,22 @@
               />
             </div>
 
-            <!-- Dòng tóm tắt Công X+Giờ trước nút gửi -->
-            <div class="clean-summary-bar">
-              <div>
-                <div style="font-size: 0.75rem; color: var(--text-secondary);">Ký hiệu bảng công ngày <strong id="previewColWorkDate">16/10/2026</strong>:</div>
-                <div id="previewSlotsSummaryText" style="font-size: 0.8rem; font-weight: 600; color: var(--text-main); margin-top: 1px;">
-                  Sáng 1h • Trưa 2h • Tối 1h
+            <!-- Dòng tóm tắt Công X+Giờ & Nút gửi ghim đáy màn hình -->
+            <div class="worker-sticky-submit-wrap">
+              <div class="clean-summary-bar">
+                <div>
+                  <div style="font-size: 0.75rem; color: var(--text-secondary);">Ký hiệu bảng công ngày <strong id="previewColWorkDate">16/10/2026</strong>:</div>
+                  <div id="previewSlotsSummaryText" style="font-size: 0.8rem; font-weight: 600; color: var(--text-main); margin-top: 1px;">
+                    Sáng 1h • Trưa 2h • Tối 1h
+                  </div>
                 </div>
+                <strong id="previewColHours" style="font-size: 1.05rem;">X+4 (4h)</strong>
               </div>
-              <strong id="previewColHours" style="font-size: 1.05rem;">X+4 (4h)</strong>
-            </div>
 
-            <button type="button" id="btnSubmitMobileOvertime" class="btn-giant-submit-ot">
-              <span id="btnSubmitMobileText">Lưu báo tăng ca</span>
-            </button>
+              <button type="button" id="btnSubmitMobileOvertime" class="btn-giant-submit-ot">
+                <span id="btnSubmitMobileText">Lưu báo tăng ca</span>
+              </button>
+            </div>
             <button type="button" id="btnDeleteDayFromForm" class="btn-danger-outline" style="display: none;">
               Xóa báo tăng ca ngày này
             </button>
@@ -475,6 +488,10 @@
               <div id="historyEmpSummaryBadge" class="est-hours-pill">
                 0 ca • 0 giờ
               </div>
+            </div>
+            <div class="history-filter-bar">
+              <button type="button" id="btnHistFilterMonth" class="slot-mini-btn active">Tháng đang xem</button>
+              <button type="button" id="btnHistFilterAll" class="slot-mini-btn">Tất cả các tháng</button>
             </div>
             <div id="workerPersonalHistoryList" class="worker-history-list">
               <!-- Render động từ app.js -->
@@ -589,35 +606,44 @@
             </div>
 
             <div class="control-actions">
-              <input type="month" id="exportMonthInput" class="control-input" title="Tháng cần xem và xuất Excel" />
+              <div class="month-nav-group" title="Chuyển nhanh tháng cần xem và xuất Excel">
+                <button type="button" id="btnAdminMonthPrev" class="month-step-btn" title="Tháng trước" aria-label="Tháng trước">&lsaquo;</button>
+                <input type="month" id="exportMonthInput" class="control-input" title="Tháng cần xem và xuất Excel" />
+                <button type="button" id="btnAdminMonthNext" class="month-step-btn" title="Tháng sau" aria-label="Tháng sau">&rsaquo;</button>
+              </div>
               <button type="button" id="btnExportTemplateXlsx" class="action-btn emerald">
                 Xuất Excel của tháng này
               </button>
               <button type="button" id="btnAdminAddRecord" class="action-btn primary">
-                + Thêm dòng tăng ca
-              </button>
-              <button type="button" id="btnOpenHolidays" class="action-btn">
-                Lịch nghỉ lễ
+                + Thêm ca
               </button>
               <button type="button" id="btnOpenManageEmployees" class="action-btn">
                 Nhân sự &amp; Tài khoản
               </button>
-              <button type="button" id="btnAdminSyncCloudNow" class="action-btn" title="Tải lại dữ liệu mới nhất từ máy chủ">
-                Tải lại
-              </button>
-              <button type="button" id="btnExportBackupJson" class="action-btn" title="Sao lưu file JSON">
-                Sao lưu
-              </button>
-              <label for="inputImportBackupJson" class="action-btn" style="cursor: pointer;" title="Khôi phục từ file JSON">
-                Nhập file
-              </label>
-              <input type="file" id="inputImportBackupJson" accept=".json" style="display: none;" />
-              <button type="button" id="btnChangeAdminPwd" class="action-btn" title="Đổi mật khẩu Admin">
-                Đổi mật khẩu Admin
-              </button>
-              <button type="button" id="btnDemoResetData" class="action-btn" title="Khôi phục dữ liệu mẫu">
-                Khôi phục mẫu
-              </button>
+              <details class="admin-more-menu">
+                <summary class="action-btn" title="Lịch nghỉ lễ, tải lại, sao lưu, nhập file, đổi mật khẩu Admin">Khác &#9662;</summary>
+                <div class="admin-more-dropdown">
+                  <button type="button" id="btnOpenHolidays" class="action-btn">
+                    Lịch nghỉ lễ
+                  </button>
+                  <button type="button" id="btnAdminSyncCloudNow" class="action-btn" title="Tải lại dữ liệu mới nhất từ máy chủ">
+                    Tải lại dữ liệu mới nhất
+                  </button>
+                  <button type="button" id="btnExportBackupJson" class="action-btn" title="Sao lưu file JSON">
+                    Sao lưu dữ liệu (.json)
+                  </button>
+                  <label for="inputImportBackupJson" class="action-btn" style="cursor: pointer;" title="Khôi phục từ file JSON">
+                    Nhập file sao lưu (.json)
+                  </label>
+                  <input type="file" id="inputImportBackupJson" accept=".json" style="display: none;" />
+                  <button type="button" id="btnChangeAdminPwd" class="action-btn" title="Đổi mật khẩu Admin">
+                    Đổi mật khẩu Admin
+                  </button>
+                  <button type="button" id="btnDemoResetData" class="action-btn" style="color: var(--rose);" title="Khôi phục dữ liệu mẫu">
+                    Khôi phục dữ liệu mẫu
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
         </div>
@@ -636,7 +662,7 @@
             <div>
               <label style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); cursor: pointer;">
                 <input type="checkbox" id="toggleShowExcelGuideRows" checked />
-                <span>Hiện 6 dòng hướng dẫn ở Sheet Chi tiết</span>
+                <span>Hiện 6 dòng hướng dẫn ở tab Chi tiết ca</span>
               </label>
             </div>
           </div>
@@ -647,13 +673,13 @@
               Bảng công hàng ngày (X+Giờ) <span id="matrixModAlertCountBadge" class="matrix-alert-pill" style="display: none;">0 sửa đổi</span>
             </button>
             <button type="button" class="excel-sheet-tab" data-sheet="SHEET_OVERTIME">
-              Sheet 1: Chi tiết tăng ca (<span id="sheet1CountLabel">0</span>)
+              Chi tiết ca (<span id="sheet1CountLabel">0</span>)
             </button>
             <button type="button" class="excel-sheet-tab" data-sheet="SHEET_EMPLOYEES">
-              Sheet 2: Nhân viên &amp; Tài khoản (<span id="sheet2CountLabel">9</span>)
+              Nhân viên (<span id="sheet2CountLabel">9</span>)
             </button>
             <button type="button" class="excel-sheet-tab" data-sheet="SHEET_GUIDE">
-              Sheet 3: Quy định file mẫu
+              Quy định
             </button>
           </div>
 
@@ -674,6 +700,10 @@
                 </button>
               </div>
               <div class="matrix-toolbar-right">
+                <label id="toggleMatrixOnlyPendingWrap" class="matrix-pending-toggle" title="Chỉ hiện những người và những ngày có ô vàng cần Quản đốc duyệt">
+                  <input type="checkbox" id="toggleMatrixOnlyPending" />
+                  <span id="toggleMatrixOnlyPendingText">Chỉ hiện ô cần duyệt</span>
+                </label>
                 <label style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.78rem; color: var(--text-secondary); cursor: pointer;">
                   <input type="checkbox" id="toggleMatrixShowAllDays" />
                   <span>Hiện đủ 31 ngày trong tháng</span>
@@ -704,9 +734,9 @@
             </div>
 
             <div class="matrix-legend-bar">
-              <span><strong>Chú thích:</strong> <code>X+4</code> = 1 công hành chính + 4 giờ tăng ca (VD: Sáng 1h + Trưa 2h + Tối 1h).</span>
+              <span><strong>Chú thích:</strong> <code>X+4</code> = 1 công hành chính + 4 giờ tăng ca (Sáng 1h + Trưa 2h + Tối 1h). <strong>Mẹo:</strong> Bấm vào bất kỳ ô nào để xem hoặc chỉnh nhanh ca ngày đó.</span>
               <span><span class="legend-swatch locked"></span> Ngày Quản đốc đã chốt công</span>
-              <span><span class="legend-swatch yellow-warn"></span> Ô bôi vàng: Công nhân tự sửa sau khi Quản đốc đã chốt</span>
+              <span><span class="legend-swatch yellow-warn"></span> Ô bôi vàng: có sửa sau khi Quản đốc đã chốt (ghi rõ trước → sau, bấm "Duyệt" để chấp nhận)</span>
             </div>
           </div>
 
@@ -921,23 +951,41 @@
             <input type="text" id="editOtJobContent" class="form-control" placeholder="Nhập nội dung công việc..." required />
           </div>
 
-          <div id="editOtTimeBlock" style="background: #f8fafc; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.85rem; margin-bottom: 0.85rem;">
-            <div class="form-grid-2">
-              <div class="form-group">
-                <label class="form-label" for="editOtStartStr">Giờ bắt đầu (dd/mm/yyyy hh:mm)</label>
-                <input type="text" id="editOtStartStr" class="form-control cell-mono" placeholder="VD: 16/10/2026 6:15" autocomplete="off" />
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="editOtEndStr">Giờ kết thúc (dd/mm/yyyy hh:mm)</label>
-                <input type="text" id="editOtEndStr" class="form-control cell-mono" placeholder="VD: 18:15 (cùng ngày chỉ cần gõ giờ)" autocomplete="off" />
+          <div id="editOtTimeBlock" class="edit-ot-time-block">
+            <div class="form-group">
+              <label class="form-label" for="editOtDatePicker">Ngày làm *</label>
+              <div class="edit-ot-date-row">
+                <input type="date" id="editOtDatePicker" class="form-control" />
+                <span id="editOtDateHuman" class="sub-meta-text">Chưa chọn ngày</span>
               </div>
             </div>
-            <div class="sub-meta-text" style="margin: -0.35rem 0 0.6rem;">Gõ 6:15 hay 6h15 đều được, máy tự đổi thành 06:15. Kết thúc cùng ngày thì chỉ cần gõ giờ.</div>
+
+            <div class="form-label" style="margin-bottom: 0.35rem;">Chọn nhanh ca (hoặc tự chọn giờ ở dưới):</div>
+            <div class="slot-quick-pills edit-ot-presets">
+              <button type="button" class="slot-mini-btn" data-admin-preset="MORN_1">Sáng 1h (06:15–07:15)</button>
+              <button type="button" class="slot-mini-btn" data-admin-preset="LUNCH_2">Trưa 2h (11:15–13:15)</button>
+              <button type="button" class="slot-mini-btn" data-admin-preset="EVE_1">Tối 1h (17:15–18:15)</button>
+              <button type="button" class="slot-mini-btn" data-admin-preset="EVE_2">Tối 2h (17:15–19:15)</button>
+              <button type="button" class="slot-mini-btn" data-admin-preset="EVE_3">Tối 3h (17:15–20:15)</button>
+              <button type="button" class="slot-mini-btn" data-admin-preset="REST_8">Ngày nghỉ 8h (07:15–15:15)</button>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label" for="editOtStartTime">Giờ bắt đầu *</label>
+                <input type="time" id="editOtStartTime" class="form-control slot-time-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="editOtEndTime">Giờ kết thúc *</label>
+                <input type="time" id="editOtEndTime" class="form-control slot-time-input" />
+              </div>
+            </div>
+            <div id="editOtTimePreview" class="edit-ot-time-preview">Chọn ngày làm, giờ bắt đầu và giờ kết thúc.</div>
 
             <div class="form-grid-2">
               <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label" for="editOtWorkDateStr">Ngày tính công (dd/mm/yyyy)</label>
-                <input type="text" id="editOtWorkDateStr" class="form-control cell-mono" placeholder="VD: 16/10/2026" />
+                <label class="form-label" for="editOtWorkDateIso">Ngày tính công</label>
+                <input type="date" id="editOtWorkDateIso" class="form-control" title="Tự theo Ngày làm. Chỉ đổi khi ca làm sau nửa đêm cần tính cho ngày hôm trước." />
               </div>
               <div class="form-group" style="margin-bottom: 0;">
                 <label class="form-label" for="editOtOverrideHours">
@@ -986,6 +1034,70 @@
         </button>
         <button type="button" id="btnCancelEditOt" class="action-btn">Hủy</button>
         <button type="button" id="btnSaveEditOt" class="action-btn primary">Lưu thay đổi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL XEM & CHỈNH NHANH Ô BẢNG CÔNG (1-CLICK TRÊN BẢNG MA TRẬN QUẢN ĐỐC)
+       ======================================================================== -->
+  <div id="modalMatrixCellQuick" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="matrixQuickModalTitle">
+    <div class="modal-dialog wide">
+      <div class="modal-header">
+        <h3 id="matrixQuickModalTitle">Chi tiết công ngày</h3>
+        <button type="button" id="btnCloseMatrixQuickModal" class="modal-close-btn" aria-label="Đóng">Đóng</button>
+      </div>
+      <div class="modal-body">
+        <div class="matrix-quick-meta-bar">
+          <div>
+            <div id="matrixQuickEmpName" style="font-weight: 800; font-size: 1rem; color: var(--text-main);">Nhân viên</div>
+            <div id="matrixQuickDateHuman" class="sub-meta-text">Thứ ..., ngày ...</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+            <span id="matrixQuickCodeBadge" class="est-hours-pill">X (0h)</span>
+            <button type="button" id="btnMatrixQuickApproveYellow" class="action-btn" style="background: #ca8a04; color: #fff; border-color: #a16207; display: none;">
+              ✓ Xác nhận sửa đổi (Bỏ vàng)
+            </button>
+          </div>
+        </div>
+
+        <div id="matrixQuickChangeBox" class="matrix-quick-change-box" style="display: none;">
+          <!-- Trước/sau của ô vàng: render động từ app.js -->
+        </div>
+
+        <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.4rem;">
+          Các ca tăng ca trong ngày:
+        </div>
+        <div id="matrixQuickShiftsList" class="matrix-quick-shift-list">
+          <!-- Render động từ app.js -->
+        </div>
+
+        <div class="matrix-quick-combo-box">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+            <span style="font-size: 0.8rem; font-weight: 700; color: var(--text-main);">Đặt nhanh tổ hợp ca cho ngày này (1 chạm):</span>
+            <button type="button" id="btnMatrixQuickClearDay" class="slot-mini-btn" style="color: var(--rose); border-color: #fecaca;">
+              Xóa hết ca ngày này (Về X)
+            </button>
+          </div>
+          <div class="matrix-quick-combo-grid">
+            <button type="button" class="slot-mini-btn rest-day-only" data-quick-cell-combo="REST_8"><strong>8h</strong> • Đi làm ngày nghỉ (07:15–15:15)</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="ONLY_EVE1"><strong>X+1</strong> • Tối 1h (17:15–18:15)</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="ONLY_LUNCH2"><strong>X+2</strong> • Trưa 2h (11:15–13:15)</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="ONLY_EVE2"><strong>X+2</strong> • Tối 2h (17:15–19:15)</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="LUNCH2_EVE1"><strong>X+3</strong> • Trưa 2h + Tối 1h</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="FULL_615_1815"><strong>X+4</strong> • Sáng 1h + Trưa 2h + Tối 1h</button>
+            <button type="button" class="slot-mini-btn" data-quick-cell-combo="FULL_615_1915"><strong>X+5</strong> • Sáng 1h + Trưa 2h + Tối 2h</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btnMatrixQuickJumpSheet1" class="action-btn" style="margin-right: auto;">
+          Xem ở tab Chi tiết ca
+        </button>
+        <button type="button" id="btnMatrixQuickAddShift" class="action-btn primary">
+          + Thêm 1 ca tùy chỉnh
+        </button>
+        <button type="button" id="btnDoneMatrixQuickModal" class="action-btn">Đóng</button>
       </div>
     </div>
   </div>
