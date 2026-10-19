@@ -17,7 +17,6 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 - *Nhân sự & Tài khoản*: thêm nhân viên (mật khẩu ban đầu do bạn đặt, nhân viên phải đổi lần đầu), đặt lại mật khẩu, cho nghỉ việc / đi làm lại. Mật khẩu được băm, không ai xem lại được, chỉ đặt lại.
 - *Lịch nghỉ lễ*: khai báo ngày lễ, nghỉ Tết.
 - *Sao lưu / Nhập file*: sao lưu 400 ngày gần nhất ra file JSON (không có mật khẩu), nhập lại khi cần.
-- *Kết nối*: đường dẫn gửi công nhân (nút Sao chép) và trạng thái kết nối Supabase.
 
 ## Cài đặt lưu dữ liệu dùng chung (Supabase) — làm 1 lần
 

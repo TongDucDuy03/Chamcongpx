@@ -22,18 +22,6 @@
         <span class="brand-title">Sổ Báo Tăng Ca</span>
       </div>
 
-      <!-- Thanh chuyển trang (Chỉ hiển thị khi đăng nhập Quản trị viên Admin) -->
-      <nav id="mainNavTabs" class="mode-tabs" aria-label="Chuyển phân khu quản trị" style="display: none;">
-        <button type="button" id="tabBtnAdminExcel" class="mode-tab-btn active">
-          <span>Bảng công &amp; Xuất Excel</span>
-          <span id="adminTotalBadge" class="tab-badge">0</span>
-        </button>
-        <button type="button" id="tabBtnDeployHub" class="mode-tab-btn">
-          <span>Kết nối</span>
-          <span id="offlineQueueTabBadge" class="tab-badge alert" style="display: none;">0</span>
-        </button>
-      </nav>
-
       <!-- Khu vực Tài khoản đang đăng nhập -->
       <div class="header-right">
         <div id="syncStatusPill" class="sync-pill" style="display: none;" title="Trạng thái kết nối">
@@ -801,69 +789,6 @@
             </table>
           </div>
 
-        </div>
-
-      </div>
-    </section>
-
-    <!-- ======================================================================
-         PHÂN KHU 3: KẾT NỐI CLOUD & ĐƯỜNG DẪN CHO CÔNG NHÂN (DÀNH CHO ADMIN)
-         ====================================================================== -->
-    <section id="viewDeployHub" class="view-section" aria-label="Kết nối và đường dẫn truy cập">
-      <div class="deploy-grid">
-
-        <!-- CỘT TRÁI: ĐƯỜNG DẪN GỬI ZALO CHO CÔNG NHÂN -->
-        <div class="panel-card">
-          <div class="panel-header">
-            <div>
-              <div class="panel-title">Đường dẫn truy cập cho công nhân</div>
-              <div class="panel-subtitle">
-                Gửi đường dẫn qua Zalo để công nhân mở trên điện thoại, đăng nhập bằng tài khoản được cấp
-              </div>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="deployPublicUrlInput">Đường dẫn truy cập</label>
-              <div style="display: flex; gap: 0.45rem;">
-                <input
-                  type="text"
-                  id="deployPublicUrlInput"
-                  class="form-control cell-mono"
-                  value="https://tongducduy03.github.io/Chamcongpx/"
-                />
-                <button type="button" id="btnCopyDeployUrl" class="action-btn primary" style="flex-shrink: 0;">
-                  Sao chép
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- CỘT PHẢI: KẾT NỐI SUPABASE (DỮ LIỆU DÙNG CHUNG) -->
-        <div class="panel-card">
-          <div class="panel-header">
-            <div>
-              <div class="panel-title">Lưu dữ liệu dùng chung (Supabase)</div>
-              <div class="panel-subtitle">
-                Công nhân báo ở bất kỳ đâu, quản đốc thấy ngay trên máy mình
-              </div>
-            </div>
-            <span id="cloudConnectionBadge" class="est-hours-pill">Chưa bật</span>
-          </div>
-          <div class="panel-body">
-            <div id="cloudStatusText" class="cloud-status-text"></div>
-            <ol class="setup-steps">
-              <li>Tạo project miễn phí trên supabase.com (chọn vùng Singapore).</li>
-              <li>Vào <b>SQL Editor</b>, dán toàn bộ file SQL (nút bên dưới) rồi bấm <b>Run</b>.</li>
-              <li>Chạy thêm dòng: <code>select ot.bootstrap_admin('mật-khẩu-admin-của-bạn');</code></li>
-              <li>Mở file <code>config.js</code>, điền Project URL và khóa Publishable, rồi đẩy lên GitHub.</li>
-            </ol>
-            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-              <button type="button" id="btnCopySqlRls" class="action-btn primary">Sao chép file SQL</button>
-              <button type="button" id="btnDownloadSqlRls" class="action-btn">Tải file SQL</button>
-            </div>
-          </div>
         </div>
 
       </div>

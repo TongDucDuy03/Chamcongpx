@@ -374,7 +374,7 @@
   // ==========================================================================
 
   let state = {
-    activeMainTab: 'LOGIN', // 'LOGIN' | 'WORKER_MOBILE' | 'ADMIN_EXCEL' | 'DEPLOY_HUB'
+    activeMainTab: 'LOGIN', // 'LOGIN' | 'WORKER_MOBILE' | 'ADMIN_EXCEL'
     activeExcelSheet: 'SHEET_MATRIX', // 'SHEET_MATRIX' | 'SHEET_OVERTIME' | 'SHEET_EMPLOYEES' | 'SHEET_GUIDE'
     showExcelGuideRows: true,
     matrixShowAllDays: false,
@@ -1550,8 +1550,6 @@
     const ackCodeEl = document.getElementById('ackReceiptCode');
     const ackDetailEl = document.getElementById('ackReceiptDetail');
     const pendingCountEl = document.getElementById('offlinePendingCount');
-    const tabBadge = document.getElementById('offlineQueueTabBadge');
-    const deployOfflineBadge = document.getElementById('deployOfflineCountBadge');
     const btnDemoWeak4G = document.getElementById('btnDemoWeak4GZalo');
     const btnSubmit = document.getElementById('btnSubmitMobileOvertime');
     const btnSubmitText = document.getElementById('btnSubmitMobileText');
@@ -1561,18 +1559,8 @@
     const qLen = pendingCount();
 
     if (pendingCountEl) pendingCountEl.textContent = String(qLen);
-    if (deployOfflineBadge) deployOfflineBadge.textContent = `${qLen} bản ghi chờ`;
     if (migEmpLabel) migEmpLabel.textContent = String(state.employees.length);
     if (migRecLabel) migRecLabel.textContent = String(state.records.length);
-
-    if (tabBadge) {
-      if (qLen > 0) {
-        tabBadge.style.display = 'inline-block';
-        tabBadge.textContent = `${qLen} chờ ACK`;
-      } else {
-        tabBadge.style.display = 'none';
-      }
-    }
 
     // Hiển thị Cảnh báo đỏ giữ màn hình trên Zalo Webview khi mạng 4G yếu hoặc còn đơn chưa nhận ACK
     if (zaloAlertBanner) {
@@ -1631,7 +1619,6 @@
         phoneBadge.textContent = 'Trực tuyến';
       }
     }
-    renderCloudStatus();
   }
 
   // ==========================================================================
@@ -3832,8 +3819,6 @@
 
   function renderAdminDashboard() {
     const monthRecords = state.records.filter((r) => isRecordInMonth(r, getSelectedMonthKey()));
-    const totalBadge = document.getElementById('adminTotalBadge');
-    if (totalBadge) totalBadge.textContent = `${monthRecords.length} dòng`;
 
     const emptyHint = document.getElementById('adminEmptyHint');
     if (emptyHint) emptyHint.style.display = state.employees.length === 0 ? 'block' : 'none';
@@ -4499,8 +4484,7 @@
   function copyEmployeeZaloCredentials(empName, customPass = '') {
     const emp = state.employees.find((e) => e.name === empName);
     if (!emp) return;
-    const urlInput = document.getElementById('deployPublicUrlInput');
-    const appUrl = (urlInput && urlInput.value ? urlInput.value.trim() : window.location.origin + window.location.pathname);
+    const appUrl = window.location.origin + window.location.pathname;
     const username = emp.username || slugifyVietnamese(emp.name);
     const pwd = customPass || (REMOTE_MODE ? '(Mật khẩu đã cấp / mặc định 123456)' : (emp.password || emp.pin || '123456'));
     const text = [
@@ -5252,7 +5236,6 @@
   function updateLiveClock() {
     const timeEl = document.getElementById('liveClockTime');
     const dateEl = document.getElementById('liveClockDate');
-    const deploySrvEl = document.getElementById('deployServerTimeLabel');
 
     const now = getAuthoritativeServerDate();
     const hms = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
@@ -5265,33 +5248,14 @@
       const days = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
       dateEl.textContent = `${days[now.getDay()]}, ${dmy}`;
     }
-    if (deploySrvEl) {
-      deploySrvEl.textContent = `${dmy} ${hms}`;
-    }
-  }
-
-  function switchMainTab(tabName) {
-    // Bảo vệ phân quyền: Chưa đăng nhập thì luôn ở màn LOGIN
-    if (!state.authRole) {
-      state.activeMainTab = 'LOGIN';
-    } else if (state.authRole === 'WORKER') {
-      // Công nhân chỉ được ở đúng màn hình báo tăng ca cá nhân của mình
-      state.activeMainTab = 'WORKER_MOBILE';
-    } else if (state.authRole === 'ADMIN') {
-      state.activeMainTab = tabName === 'DEPLOY_HUB' ? 'DEPLOY_HUB' : 'ADMIN_EXCEL';
-    }
-
-    renderAll();
   }
 
   function updateHeaderSessionBar() {
-    const navTabs = document.getElementById('mainNavTabs');
     const sessionBox = document.getElementById('headerUserSessionBox');
     const roleBadge = document.getElementById('headerUserRoleBadge');
     const userNameEl = document.getElementById('headerLoggedUserName');
 
     if (!state.authRole) {
-      if (navTabs) navTabs.style.display = 'none';
       if (sessionBox) sessionBox.style.display = 'none';
       return;
     }
@@ -5299,7 +5263,6 @@
     if (sessionBox) sessionBox.style.display = 'inline-flex';
 
     if (state.authRole === 'WORKER') {
-      if (navTabs) navTabs.style.display = 'none';
       if (roleBadge) {
         roleBadge.textContent = 'Công nhân';
         roleBadge.className = 'user-role-tag';
@@ -5308,7 +5271,6 @@
         userNameEl.textContent = state.loggedInEmployeeName || state.selectedEmployeeName;
       }
     } else if (state.authRole === 'ADMIN') {
-      if (navTabs) navTabs.style.display = 'flex';
       if (roleBadge) {
         roleBadge.textContent = 'Quản trị viên';
         roleBadge.className = 'user-role-tag admin';
@@ -5332,18 +5294,10 @@
     const vLogin = document.getElementById('viewLoginScreen');
     const vWorker = document.getElementById('viewWorkerMobile');
     const vAdmin = document.getElementById('viewAdminExcel');
-    const vDeploy = document.getElementById('viewDeployHub');
-
-    const bAdmin = document.getElementById('tabBtnAdminExcel');
-    const bDeploy = document.getElementById('tabBtnDeployHub');
 
     if (vLogin) vLogin.classList.toggle('active', state.activeMainTab === 'LOGIN');
     if (vWorker) vWorker.classList.toggle('active', state.activeMainTab === 'WORKER_MOBILE');
     if (vAdmin) vAdmin.classList.toggle('active', state.activeMainTab === 'ADMIN_EXCEL');
-    if (vDeploy) vDeploy.classList.toggle('active', state.activeMainTab === 'DEPLOY_HUB');
-
-    if (bAdmin) bAdmin.classList.toggle('active', state.activeMainTab === 'ADMIN_EXCEL');
-    if (bDeploy) bDeploy.classList.toggle('active', state.activeMainTab === 'DEPLOY_HUB');
 
     updateHeaderSessionBar();
     updateSyncStatusUI(true);
@@ -5480,10 +5434,6 @@
 
     document.getElementById('btnHeaderLogout')?.addEventListener('click', logoutCurrentUser);
     document.getElementById('btnWorkerCardLogout')?.addEventListener('click', logoutCurrentUser);
-
-    // 1. Chuyển phân khu trên Header (Dành cho Admin)
-    document.getElementById('tabBtnAdminExcel')?.addEventListener('click', () => switchMainTab('ADMIN_EXCEL'));
-    document.getElementById('tabBtnDeployHub')?.addEventListener('click', () => switchMainTab('DEPLOY_HUB'));
 
     document.getElementById('btnDemoResetData')?.addEventListener('click', () => {
       if (
@@ -6022,14 +5972,6 @@
     });
     document.getElementById('btnSubmitNewEmployee')?.addEventListener('click', handleAddNewEmployee);
 
-    // 5. Sự kiện trong Phân khu 3 (Kết nối)
-    document.getElementById('btnCopyDeployUrl')?.addEventListener('click', () => {
-      const urlInput = document.getElementById('deployPublicUrlInput');
-      if (urlInput) {
-        navigator.clipboard?.writeText(urlInput.value);
-        showToast(`Đã copy đường dẫn: <strong>${escapeHtml(urlInput.value)}</strong>`, 'success');
-      }
-    });
     document.getElementById('btnChangeAdminPwd')?.addEventListener('click', changeAdminPassword);
   }
 
@@ -6594,33 +6536,6 @@
     }
   }
 
-  // ---- Khung trạng thái kết nối trong tab "Kết nối" ----
-  function renderCloudStatus() {
-    const badge = document.getElementById('cloudConnectionBadge');
-    const box = document.getElementById('cloudStatusText');
-    if (!badge && !box) return;
-    if (REMOTE_MODE) {
-      if (badge) badge.textContent = state.serverConnected ? 'Đã kết nối' : 'Mất kết nối';
-      if (box) {
-        box.innerHTML = state.serverConnected
-          ? '<strong>Đang dùng Supabase.</strong> Dữ liệu lưu trên máy chủ, công nhân báo ở đâu quản đốc cũng thấy ngay.'
-          : '<strong>Chưa kết nối được máy chủ.</strong> Hãy kiểm tra mạng. Dữ liệu vừa nhập được giữ trên máy và tự gửi khi có mạng.';
-      }
-    } else {
-      if (badge) badge.textContent = 'Chưa bật';
-      if (box) {
-        box.innerHTML =
-          '<strong>Đang chạy chế độ thử.</strong> Dữ liệu chỉ lưu trong trình duyệt của máy này, công nhân khác không thấy. Làm theo 4 bước dưới đây để bật dùng chung.';
-      }
-    }
-  }
-
-  async function fetchSetupSql() {
-    const res = await fetch('supabase_setup.sql', { cache: 'no-store' });
-    if (!res.ok) throw new Error('missing');
-    return res.text();
-  }
-
   function bindRemoteEvents() {
     document.getElementById('btnCpSubmit')?.addEventListener('click', submitChangePassword);
     document.getElementById('btnCpLater')?.addEventListener('click', closeChangePasswordModal);
@@ -6631,28 +6546,6 @@
       });
     });
     document.getElementById('btnWorkerChangePwd')?.addEventListener('click', () => openChangePasswordModal());
-
-    document.getElementById('btnCopySqlRls')?.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(await fetchSetupSql());
-        showToast('Đã sao chép file SQL. Dán vào Supabase, mục SQL Editor.', 'success');
-      } catch (_) {
-        showToast('Không sao chép được. Hãy bấm "Tải file SQL".', 'error');
-      }
-    });
-    document.getElementById('btnDownloadSqlRls')?.addEventListener('click', async () => {
-      try {
-        const blob = new Blob([await fetchSetupSql()], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'supabase_setup.sql';
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      } catch (_) {
-        showToast('Không tải được file SQL.', 'error');
-      }
-    });
   }
 
   /** Sao lưu khi dùng Supabase: tải 400 ngày gần nhất từ máy chủ (không gồm mật khẩu). */
