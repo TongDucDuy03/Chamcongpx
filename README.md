@@ -29,6 +29,22 @@ Khi chưa cài đặt, ứng dụng chạy chế độ thử: dữ liệu chỉ 
 
 Đẩy lên GitHub: vào *Settings → Pages → Source: GitHub Actions*; mỗi lần đẩy code lên nhánh `main`, web tự cập nhật sau khoảng 1 phút.
 
+## Bot Telegram nhắc Quản đốc (tùy chọn) — làm 1 lần
+
+Mỗi ngày lúc 14:00, bot gửi vào Telegram danh sách công nhân đang làm việc mà **ngày hôm trước chưa có ca tăng ca nào**, để Quản đốc đi nhắc. Người hôm đó không tăng ca thật cũng có tên, Quản đốc tự bỏ qua. Hôm trước là Chủ nhật hoặc ngày lễ (trong *Lịch nghỉ lễ*) thì bot không nhắc. Bot chạy ngay trong Supabase, không cần máy nào bật.
+
+1. **Tạo bot**: trong Telegram tìm **@BotFather** → gửi `/newbot` → đặt tên → BotFather gửi lại **TOKEN** dạng `123456789:AAH...`. Giữ bí mật token này, không dán vào `config.js` hay gửi cho ai.
+2. **Chọn nơi nhận tin**:
+   - Gửi riêng cho Quản đốc: Quản đốc mở bot vừa tạo, bấm **Start**.
+   - Gửi vào nhóm: thêm bot vào nhóm Quản đốc, rồi gửi trong nhóm `/start@ten_bot`.
+3. **Lấy CHAT_ID**: mở trình duyệt vào `https://api.telegram.org/bot<TOKEN>/getUpdates` (thay `<TOKEN>`), tìm đoạn `"chat":{"id":...}`. Chat riêng là số dương, nhóm là số âm (ví dụ `-1001234567890`). Nếu thấy `"result":[]` thì gửi lại `/start` rồi tải lại trang.
+4. Supabase → **SQL Editor** → **New query**, dán toàn bộ file `telegram_nhac_cham_cong.sql` → **Run**. Nếu báo cần bật `pg_net` / `pg_cron` thì vào *Database → Extensions* bật lên rồi chạy lại.
+5. Trong SQL Editor chạy (thay token và chat id của bạn):
+   `select ot.telegram_setup('TOKEN', 'CHAT_ID');`
+6. Gửi thử ngay: `select ot.telegram_test();` → vài giây sau Telegram nhận tin `[Gửi thử]`. Không thấy tin thì chạy `select ot.telegram_check();` để xem lý do (sai token, sai chat id, bot bị chặn...).
+
+Đổi giờ nhắc: `select ot.telegram_set_time('15:30');` (giờ Việt Nam). Tắt nhắc: `select ot.telegram_off();`. Đổi token / nơi nhận: chạy lại bước 5.
+
 ## Bảo mật
 
 - Mọi bảng dữ liệu nằm trong schema riêng `ot`, không mở ra ngoài API. Trình duyệt chỉ gọi được 6 hàm `app_*` (đăng nhập, đăng xuất, đổi mật khẩu, tải, hỏi nhanh có gì mới, lưu), mỗi hàm tự kiểm tra phiên đăng nhập.
@@ -55,5 +71,6 @@ Cần cài Node.js. Nhấp đúp `KHOI_CHAY_SERVER.bat`, điện thoại cùng W
 | `remote.js` | Lớp kết nối Supabase (gửi từng dòng thay đổi) |
 | `config.js` | Địa chỉ project + khóa Publishable |
 | `supabase_setup.sql` | Cài đặt cơ sở dữ liệu và bảo mật |
+| `telegram_nhac_cham_cong.sql` | Bot Telegram nhắc Quản đốc ai chưa báo tăng ca hôm trước |
 | `server.js`, `KHOI_CHAY_SERVER.bat` | Máy chủ thử trong mạng nội bộ |
 | `Mau_chi_tiet_tang_ca_10_2026_GOC.xlsx` | File Excel mẫu gốc |
