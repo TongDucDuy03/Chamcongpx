@@ -1029,6 +1029,28 @@
     }
   }
 
+  /**
+   * Chốt các ngày có ca trong tháng đang xem mà chưa chốt. Ngày đã chốt giữ nguyên,
+   * không chốt lại, để không xóa mất các ô vàng đang chờ Quản đốc duyệt.
+   */
+  function lockAllUnlockedDaysInMonth() {
+    const monthKey = getSelectedMonthKey();
+    const lockedAt = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
+    const days = new Set(
+      state.records
+        .filter((r) => r.workDate && isRecordInMonth(r, monthKey) && !state.lockedDays[r.workDate]?.locked)
+        .map((r) => r.workDate)
+    );
+    days.forEach((d) => {
+      state.lockedDays[d] = { locked: true, lockedAt, snapshot: createDaySnapshot(d) };
+    });
+    if (days.size > 0) {
+      saveLocalState(true);
+      syncWithCentralServer(true);
+    }
+    return days.size;
+  }
+
   function unlockAttendanceDay(workDateVn) {
     if (!state.lockedDays[workDateVn]) return;
     delete state.lockedDays[workDateVn];
@@ -1064,6 +1086,23 @@
         : { totalHours: 0, code: 'X', detailStr: 'Không tăng ca' });
 
     const afterSummary = getEmployeeDaySummary(empName, workDateVn);
+    const beforeCode = oldSnap.code || 'X';
+    const afterCode = afterSummary.codeLabel || 'X';
+    const alertKey = `${workDateVn}::${empName}`;
+
+    // Bấm Lưu lại mà giờ vẫn y như lúc chốt thì không có gì để Quản đốc duyệt: không bôi vàng.
+    // Đã có ô vàng từ trước thì giữ nguyên (công nhân không được tự xóa cảnh báo, chỉ Quản đốc duyệt).
+    const unchanged =
+      afterCode === beforeCode && (afterSummary.detailStr || 'Không tăng ca') === (oldSnap.detailStr || 'Không tăng ca');
+    if (unchanged && !state.dayModAlerts[alertKey]) {
+      state.records.forEach((r) => {
+        if (r.employeeName === empName && r.workDate === workDateVn) {
+          r.modifiedAfterLock = false;
+          r.modifiedAt = '';
+        }
+      });
+      return false;
+    }
 
     state.records.forEach((r) => {
       if (r.employeeName === empName && r.workDate === workDateVn) {
@@ -1071,10 +1110,6 @@
       }
     });
 
-    const beforeCode = oldSnap.code || 'X';
-    const afterCode = afterSummary.codeLabel || 'X';
-
-    const alertKey = `${workDateVn}::${empName}`;
     state.dayModAlerts[alertKey] = {
       key: alertKey,
       workDate: workDateVn,
@@ -1100,7 +1135,7 @@
       const sum = getEmployeeDaySummary(employeeName, workDate);
       state.lockedDays[workDate].snapshot[employeeName] = {
         totalHours: sum.totalHours,
-        code: sum.code || 'X',
+        code: sum.codeLabel || 'X',
         detailStr: sum.detailStr || 'Không tăng ca'
       };
     }
@@ -1125,7 +1160,7 @@
         const sum = getEmployeeDaySummary(employeeName, workDate);
         state.lockedDays[workDate].snapshot[employeeName] = {
           totalHours: sum.totalHours,
-          code: sum.code || 'X',
+          code: sum.codeLabel || 'X',
           detailStr: sum.detailStr || 'Không tăng ca'
         };
       }
@@ -2233,7 +2268,7 @@
    */
   function computeCurrentMobileDailySlots() {
     const isoDateEl = document.getElementById('mobileWorkDate');
-    const isoDate = isoDateEl && isoDateEl.value ? isoDateEl.value : '2026-10-16';
+    const isoDate = isoDateEl && isoDateEl.value ? isoDateEl.value : localIsoToday();
     const workDateStr = isoDateToVnDate(isoDate);
 
     // 1. Ca Sáng
@@ -2491,7 +2526,7 @@
       dateInput.value = isoDate;
     }
 
-    const vnDate = isoDateToVnDate(isoDate || '2026-10-16');
+    const vnDate = isoDateToVnDate(isoDate || localIsoToday());
     const dayRecords = state.records.filter(
       (r) => r.employeeName === empName && r.workDate === vnDate && !r.isDriverNoTime
     );
@@ -3129,10 +3164,7 @@
       const employed = isEmployedOn(empObj, iso);
       const lockInfo = state.lockedDays[vn];
       const isLocked = Boolean(lockInfo && lockInfo.locked);
-      const hasWarn = Boolean(
-        state.dayModAlerts &&
-          Object.keys(state.dayModAlerts).some((k) => k.includes(vn) && k.includes(empName))
-      );
+      const hasWarn = Boolean(state.dayModAlerts && state.dayModAlerts[`${vn}::${empName}`]);
 
       let code = '';
       if (!employed) {
@@ -3697,7 +3729,7 @@
     // Cập nhật nút Chốt công ngày đang chọn trên thanh công cụ
     const lockDateInp = document.getElementById('matrixLockDateInput');
     const btnLockSel = document.getElementById('btnLockSelectedDay');
-    const selectedIso = lockDateInp && lockDateInp.value ? lockDateInp.value : '2026-10-15';
+    const selectedIso = lockDateInp && lockDateInp.value ? lockDateInp.value : localIsoToday();
     const selectedVnDate = isoDateToVnDate(selectedIso);
     const isSelLocked = Boolean(state.lockedDays && state.lockedDays[selectedVnDate]?.locked);
 
@@ -4079,7 +4111,7 @@
                 Sửa
               </button>
               <button type="button" class="action-btn btn-del-ot-row" data-id="${escapeHtml(rec.id)}" style="padding: 0.28rem 0.5rem; font-size: 0.74rem; color: var(--rose);">
-                
+                Xóa
               </button>
             </td>
           </tr>
@@ -4117,9 +4149,10 @@
       </tr>
     `;
 
+    const sheet2Month = getSelectedMonthKey();
     state.employees.forEach((emp, idx) => {
       const r = idx + 2;
-      const empRecs = state.records.filter((rec) => rec.employeeName === emp.name);
+      const empRecs = state.records.filter((rec) => rec.employeeName === emp.name && isRecordInMonth(rec, sheet2Month));
       const totalHrs = Math.round(empRecs.reduce((s, rec) => s + computeEstimatedHours(rec), 0) * 100) / 100;
       html += `
         <tr class="data-row">
@@ -4222,15 +4255,16 @@
     }
 
     const existing = recordId ? state.records.find((r) => r.id === recordId) : null;
+    const todayVn = isoDateToVnDate(localIsoToday());
 
     if (existing) {
       if (title) title.textContent = `Chỉnh Sửa Dòng Tăng Ca — ${existing.employeeName}`;
       if (idInput) idInput.value = existing.id;
       if (empSelect) empSelect.value = existing.employeeName;
       if (jobInput) jobInput.value = existing.jobContent;
-      if (startInput) startInput.value = existing.startTime || '16/10/2026 17:15';
-      if (endInput) endInput.value = existing.endTime || '16/10/2026 18:15';
-      if (dateInput) dateInput.value = existing.workDate || '16/10/2026';
+      if (startInput) startInput.value = existing.startTime || `${todayVn} 17:15`;
+      if (endInput) endInput.value = existing.endTime || `${todayVn} 18:15`;
+      if (dateInput) dateInput.value = existing.workDate || todayVn;
       if (overrideInput) {
         overrideInput.value =
           existing.overrideHours !== null && existing.overrideHours !== undefined
@@ -4243,14 +4277,14 @@
       if (delBtn) delBtn.style.display = 'inline-flex';
       if (timeBlock) timeBlock.style.display = 'block';
     } else {
-      const defEmp = state.employees[0];
+      const defEmp = state.employees.find((e) => isEmployeeCurrentlyActive(e)) || state.employees[0];
       if (title) title.textContent = 'Thêm Dòng Chi Tiết Tăng Ca Mới';
       if (idInput) idInput.value = '';
       if (empSelect && defEmp) empSelect.value = defEmp.name;
       if (jobInput) jobInput.value = 'Gia công & hoàn thiện đơn hàng gấp';
-      if (startInput) startInput.value = '16/10/2026 17:15';
-      if (endInput) endInput.value = '16/10/2026 18:15';
-      if (dateInput) dateInput.value = '16/10/2026';
+      if (startInput) startInput.value = `${todayVn} 17:15`;
+      if (endInput) endInput.value = `${todayVn} 18:15`;
+      if (dateInput) dateInput.value = todayVn;
       if (overrideInput) overrideInput.value = '';
       if (typeSelect) typeSelect.value = defEmp ? defEmp.defaultOvertimeType : 'Ngoài khoán';
       if (workModeSelect) workModeSelect.value = defEmp ? defEmp.defaultWorkMode : 'Tăng ca tại công ty';
@@ -4323,6 +4357,14 @@
     const idx = state.records.findIndex((r) => r.id === recordId);
     if (idx === -1) return;
     const removed = state.records[idx];
+    const removedHm = (t) => (String(t || '').split(' ')[1] || '').slice(0, 5);
+    if (
+      !window.confirm(
+        `Xóa ca ${removedHm(removed.startTime)} → ${removedHm(removed.endTime)} ngày ${removed.workDate} của ${removed.employeeName}?\n\nĐã xóa thì không khôi phục được.`
+      )
+    ) {
+      return;
+    }
     const beforeSummary = getEmployeeDaySummary(removed.employeeName, removed.workDate);
     state.records.splice(idx, 1);
 
@@ -4945,6 +4987,7 @@
 
     // Khi đổi Ngày tính công trên điện thoại -> Tự động kiểm tra và nạp các ca đã lưu của ngày đó (nếu có)
     document.getElementById('mobileWorkDate')?.addEventListener('change', (e) => {
+      if (!e.target.value) e.target.value = localIsoToday(); // bấm "Xóa" trong bảng chọn ngày thì quay về hôm nay
       const isoDate = e.target.value;
       const activeWorkerName =
         state.authRole === 'WORKER' && state.loggedInEmployeeName
@@ -5082,12 +5125,16 @@
     });
 
     document.getElementById('btnLockAllActiveDays')?.addEventListener('click', () => {
-      const activeDates = new Set(state.records.map((r) => r.workDate).filter(Boolean));
-      activeDates.forEach((d) => lockAttendanceDay(d));
-      playFeedbackSound('SUCCESS');
+      const n = lockAllUnlockedDaysInMonth();
       renderAll();
+      if (n === 0) {
+        showToast('Các ngày có tăng ca trong tháng này đều đã chốt rồi.', 'success');
+        return;
+      }
+      playFeedbackSound('SUCCESS');
+      const pendingYellow = Object.keys(state.dayModAlerts || {}).length;
       showToast(
-        `Đã chốt toàn bộ <strong>${activeDates.size} ngày</strong> có dữ liệu tăng ca! Mọi chỉnh sửa phát sinh sau thời điểm này sẽ tự động bôi vàng.`,
+        `Đã chốt thêm <strong>${n} ngày</strong> có tăng ca trong tháng. Ngày đã chốt trước đó giữ nguyên${pendingYellow ? `, còn <strong>${pendingYellow} ô vàng</strong> chờ duyệt` : ''}.`,
         'success'
       );
     });
@@ -5254,6 +5301,16 @@
     const otEndEl = document.getElementById('editOtEndStr');
     const otDateEl = document.getElementById('editOtWorkDateStr');
     const otStartValue = () => normalizeVnDateTime(otStartEl?.value, normalizeVnDate(otDateEl?.value));
+    // Thêm dòng mới: đổi nhân viên thì Loại / Hình thức tăng ca theo mặc định của người đó
+    document.getElementById('editOtEmployee')?.addEventListener('change', (e) => {
+      if (document.getElementById('editOtRecordId')?.value) return;
+      const emp = state.employees.find((x) => x.name === e.target.value);
+      if (!emp) return;
+      const typeSel = document.getElementById('editOtType');
+      const modeSel = document.getElementById('editOtWorkMode');
+      if (typeSel) typeSel.value = emp.defaultOvertimeType || 'Ngoài khoán';
+      if (modeSel) modeSel.value = emp.defaultWorkMode || 'Tăng ca tại công ty';
+    });
     otDateEl?.addEventListener('change', () => {
       const v = normalizeVnDate(otDateEl.value);
       if (v) otDateEl.value = v;
