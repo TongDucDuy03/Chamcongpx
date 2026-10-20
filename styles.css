@@ -2354,5 +2354,12 @@ tr.data-row.rest-day-row td { background: #fff1f2; }
 .cal-list-row.rest { background: #fff1f2; }
 .cal-dot.sunday { background: #fff1f2; border: 1px solid #fecdd3; }
 .legend-swatch.rest-day { background: #fff1f2; border: 1px solid #fecdd3; }
+
+/* Cột ngày đang lọc ở thanh bộ lọc (Ngày: ‹ dd/mm/yyyy ›): viền xanh 2 bên, giữ nguyên màu nền của ô */
+.matrix-attendance-table th.filter-day-col,
+.matrix-attendance-table td.filter-day-col {
+  box-shadow: inset 2px 0 0 var(--primary), inset -2px 0 0 var(--primary);
+}
+.matrix-attendance-table th.filter-day-col { border-top: 3px solid var(--primary); }
 /* Ô sửa sau chốt luôn nổi bật nhất */
 .cal-cell.warn { background: #fef08a; border-color: #ca8a04; }

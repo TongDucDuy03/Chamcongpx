@@ -619,11 +619,23 @@
                 <option value="Tăng ca ngoài công ty">Tăng ca ngoài công ty</option>
               </select>
 
+              <label for="adminFilterDay" style="font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">
+                Ngày:
+              </label>
+              <div class="month-nav-group" title="Lọc 1 ngày: tab Chi tiết ca và file Excel chỉ lấy ngày này">
+                <button type="button" id="btnAdminDayPrev" class="month-step-btn" title="Ngày trước" aria-label="Ngày trước">&lsaquo;</button>
+                <input type="date" id="adminFilterDay" class="control-input" title="Chọn ngày cần xem và xuất Excel" />
+                <button type="button" id="btnAdminDayNext" class="month-step-btn" title="Ngày sau" aria-label="Ngày sau">&rsaquo;</button>
+              </div>
+              <button type="button" id="btnAdminDayClear" class="action-btn" style="display: none;" title="Bỏ lọc ngày, xem và xuất cả tháng">
+                Cả tháng
+              </button>
+
               <input
                 type="text"
                 id="adminSearchInput"
                 class="control-input"
-                placeholder="Tìm tên, ngày (dd/mm/yyyy), công việc..."
+                placeholder="Tìm tên, công việc, ghi chú..."
                 style="min-width: 210px;"
               />
             </div>

@@ -14,7 +14,7 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 - Mất mạng thì dữ liệu được giữ trên điện thoại và tự gửi khi có mạng.
 
 **Quản đốc (admin)** — đăng nhập bằng tên `admin`.
-- *Bảng công & Xuất Excel*: bảng công cả tháng, chọn tháng ở ô "Tháng", chốt công từng ngày, thêm/sửa/xóa ca, xuất Excel của tháng đang chọn. Công nhân sửa sau khi đã chốt thì ô được bôi vàng.
+- *Bảng công & Xuất Excel*: bảng công cả tháng, chọn tháng ở ô "Tháng", chốt công từng ngày, thêm/sửa/xóa ca, xuất Excel của tháng đang chọn (chọn ô "Ngày" trên thanh lọc thì chỉ xem và xuất các ca của ngày đó). Công nhân sửa sau khi đã chốt thì ô được bôi vàng.
 - *Nhân sự & Tài khoản*: thêm nhân viên (mật khẩu ban đầu do bạn đặt, nhân viên phải đổi lần đầu), đặt lại mật khẩu, cho nghỉ việc / đi làm lại. Mật khẩu được băm, không ai xem lại được, chỉ đặt lại.
 - *Lịch nghỉ lễ*: khai báo ngày lễ, nghỉ Tết.
 - *Sao lưu / Nhập file*: sao lưu 400 ngày gần nhất ra file JSON (không có mật khẩu), nhập lại khi cần.

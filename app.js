@@ -431,6 +431,7 @@
     // Bộ lọc trang Admin
     adminFilterEmp: 'ALL',
     adminFilterMode: 'ALL',
+    adminFilterDay: '', // 'YYYY-MM-DD' khi lọc 1 ngày (Chi tiết ca + file Excel chỉ lấy ngày này), '' = cả tháng
     adminSearchQuery: '',
 
     // Trạng thái Modal PIN
@@ -1831,11 +1832,12 @@
    * Tạo toàn bộ nội dung 12 file XML bên trong `Mẫu chi tiết tăng ca 10_2026.xlsx`
    * giữ nguyên 100% cấu trúc gốc, styles, theme, Named Ranges, công thức và Data Validation!
    */
-  function generateExactTemplateXlsxBytes() {
+  function generateExactTemplateXlsxBytes(sourceRecords) {
     // 1. Lọc sạch chỉ lấy các dòng hợp lệ có Nội dung công việc (Mục 1 Hướng dẫn)
     // Sắp xếp theo thời gian để bảng xuất ra gọn gàng, chuyên nghiệp
+    // sourceRecords: các dòng cần xuất (VD chỉ 1 ngày đang lọc); bỏ trống = cả tháng đang chọn
     const exportMonthKey = getSelectedMonthKey();
-    const validRecords = state.records
+    const validRecords = (sourceRecords || state.records)
       .filter((r) => r && r.employeeName && r.jobContent && r.jobContent.trim().length > 0 && isRecordInMonth(r, exportMonthKey))
       .slice()
       .sort((a, b) => {
@@ -2231,25 +2233,49 @@
   }
 
   /**
-   * Xuất và tải ngay file `Mẫu chi tiết tăng ca 10_2026.xlsx`
+   * Tên file xuất: cả tháng `Mẫu chi tiết tăng ca 10_2026.xlsx`, lọc 1 ngày `Mẫu chi tiết tăng ca ngày 19_10_2026.xlsx`
+   */
+  function getAdminExportFileName() {
+    const exKey = getSelectedMonthKey();
+    const dayVn = getAdminFilterDayVn();
+    let name = dayVn
+      ? `Mẫu chi tiết tăng ca ngày ${dayVn.replace(/\//g, '_')}`
+      : `Mẫu chi tiết tăng ca ${exKey.slice(5)}_${exKey.slice(0, 4)}`;
+    if (state.adminFilterEmp !== 'ALL') name += ` - ${state.adminFilterEmp}`;
+    if (state.adminFilterMode !== 'ALL' || state.adminSearchQuery.trim()) name += ' (đã lọc)';
+    return `${name}.xlsx`;
+  }
+
+  /**
+   * Xuất và tải ngay file Excel chi tiết tăng ca: đúng những dòng tab Chi tiết ca đang hiện
+   * (cả tháng, hoặc chỉ 1 ngày / 1 người / 1 hình thức nếu đang lọc)
    */
   function downloadExactTemplateXlsx() {
     if (state.offlineQueue.length > 0) {
       flushOfflineQueue();
     }
-    if (!state.records.some((r) => isRecordInMonth(r, getSelectedMonthKey()))) {
-      showToast('Tháng này chưa có dòng tăng ca nào để xuất.', 'warn');
+    const exKey = getSelectedMonthKey();
+    const dayVn = getAdminFilterDayVn();
+    const exportRecords = getAdminExportRecords();
+    if (exportRecords.length === 0) {
+      showToast(
+        hasAdminExtraFilters()
+          ? 'Không có dòng tăng ca nào khớp bộ lọc để xuất.'
+          : dayVn
+            ? `Ngày ${escapeHtml(dayVn)} chưa có dòng tăng ca nào để xuất.`
+            : 'Tháng này chưa có dòng tăng ca nào để xuất.',
+        'warn'
+      );
       return;
     }
-    const zipBytes = generateExactTemplateXlsxBytes();
+    const zipBytes = generateExactTemplateXlsxBytes(exportRecords);
     const blob = new Blob([zipBytes], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const exKey = getSelectedMonthKey();
-    const exFileName = `Mẫu chi tiết tăng ca ${exKey.slice(5)}_${exKey.slice(0, 4)}.xlsx`;
+    const exFileName = getAdminExportFileName();
     a.download = exFileName;
     document.body.appendChild(a);
     a.click();
@@ -2258,7 +2284,7 @@
 
     playFeedbackSound('SUCCESS');
     showToast(
-      `Đã xuất file <strong>${escapeHtml(exFileName)}</strong> (${state.records.filter((r) => isRecordInMonth(r, exKey)).length} dòng tăng ca của tháng ${exKey.slice(5)}/${exKey.slice(0, 4)}).`,
+      `Đã xuất file <strong>${escapeHtml(exFileName)}</strong> (${exportRecords.length} dòng tăng ca ${dayVn ? `ngày ${escapeHtml(dayVn)}` : `của tháng ${exKey.slice(5)}/${exKey.slice(0, 4)}`}${hasAdminExtraFilters() ? ', theo bộ lọc' : ''}).`,
       'success'
     );
   }
@@ -4069,6 +4095,8 @@
   function setSelectedMonth(monthKey) {
     if (!/^\d{4}-\d{2}$/.test(monthKey || '')) return;
     state.matrixMonth = monthKey;
+    // Đổi sang tháng khác thì bỏ lọc ngày của tháng cũ
+    if (state.adminFilterDay && state.adminFilterDay.slice(0, 7) !== monthKey) state.adminFilterDay = '';
     renderAll();
     if (REMOTE_MODE && state.authRole === 'ADMIN') {
       setAppLoading(true);
@@ -4076,10 +4104,43 @@
     }
   }
 
+  // Vừa chọn ngày lọc: lần vẽ bảng công tiếp theo cuộn ngang tới cột ngày đó
+  let scrollMatrixToFilterDay = false;
+
+  /** Ngày đang lọc dạng dd/mm/yyyy, '' = cả tháng (ngày không thuộc tháng đang xem thì coi như không lọc) */
+  function getAdminFilterDayVn() {
+    const iso = state.adminFilterDay || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || iso.slice(0, 7) !== getSelectedMonthKey()) return '';
+    return isoDateToVnDate(iso);
+  }
+
+  /** Chọn ngày lọc ('' = cả tháng). Ngày thuộc tháng khác thì chuyển luôn sang tháng đó. */
+  function setAdminFilterDay(isoDate) {
+    state.adminFilterDay = /^\d{4}-\d{2}-\d{2}$/.test(isoDate || '') ? isoDate : '';
+    scrollMatrixToFilterDay = Boolean(state.adminFilterDay);
+    if (state.adminFilterDay && state.adminFilterDay.slice(0, 7) !== getSelectedMonthKey()) {
+      setSelectedMonth(state.adminFilterDay.slice(0, 7));
+      return;
+    }
+    renderAdminDashboard();
+  }
+
+  /** Có lọc theo nhân viên / hình thức / ô tìm kiếm (ngoài tháng và ngày) */
+  function hasAdminExtraFilters() {
+    return state.adminFilterEmp !== 'ALL' || state.adminFilterMode !== 'ALL' || state.adminSearchQuery.trim() !== '';
+  }
+
+  /** Các dòng sẽ đưa vào file Excel: đúng những dòng tab Chi tiết ca đang hiện, bỏ dòng chưa có nội dung công việc */
+  function getAdminExportRecords() {
+    return getFilteredAdminRecords().filter((r) => r && r.employeeName && r.jobContent && r.jobContent.trim().length > 0);
+  }
+
   function getFilteredAdminRecords() {
     const monthKey = getSelectedMonthKey();
+    const dayVn = getAdminFilterDayVn();
     return state.records.filter((r) => {
       if (!isRecordInMonth(r, monthKey)) return false;
+      if (dayVn && r.workDate !== dayVn) return false;
       if (state.adminFilterEmp !== 'ALL' && r.employeeName !== state.adminFilterEmp) {
         return false;
       }
@@ -4171,7 +4232,29 @@
     const s1Label = document.getElementById('sheet1CountLabel');
     const s2Label = document.getElementById('sheet2CountLabel');
     const modBadge = document.getElementById('matrixModAlertCountBadge');
-    if (s1Label) s1Label.textContent = String(totalRecords);
+    const shownCount = getFilteredAdminRecords().length;
+    if (s1Label) s1Label.textContent = shownCount === totalRecords ? String(totalRecords) : `${shownCount}/${totalRecords}`;
+
+    // Ô lọc ngày + nút "Cả tháng" + chữ trên nút Xuất Excel theo đúng phạm vi sẽ xuất
+    const filterDayVn = getAdminFilterDayVn();
+    const dayInput = document.getElementById('adminFilterDay');
+    if (dayInput && dayInput.value !== (filterDayVn ? state.adminFilterDay : '')) {
+      dayInput.value = filterDayVn ? state.adminFilterDay : '';
+    }
+    const dayClearBtn = document.getElementById('btnAdminDayClear');
+    if (dayClearBtn) dayClearBtn.style.display = filterDayVn ? '' : 'none';
+    const exportBtn = document.getElementById('btnExportTemplateXlsx');
+    if (exportBtn) {
+      const exportCount = getAdminExportRecords().length;
+      const scope = filterDayVn ? `ngày ${filterDayVn.slice(0, 5)}` : hasAdminExtraFilters() ? '' : 'của tháng này';
+      const label = ['Xuất Excel', scope, hasAdminExtraFilters() ? 'theo bộ lọc' : ''].filter(Boolean).join(' ');
+      exportBtn.textContent = `${label} (${exportCount} ca)`;
+      exportBtn.title = hasAdminExtraFilters()
+        ? 'Chỉ xuất những dòng đang hiện ở tab Chi tiết ca (đang lọc theo nhân viên / hình thức / ô tìm kiếm)'
+        : filterDayVn
+          ? `Chỉ xuất các ca tăng ca tính công ngày ${filterDayVn}`
+          : 'Xuất tất cả ca tăng ca của tháng đang chọn';
+    }
     if (s2Label) s2Label.textContent = String(state.employees.length);
     if (modBadge) {
       if (modAlertCount > 0) {
@@ -4312,6 +4395,8 @@
       });
       const todayVn = isoDateToVnDate(localIsoToday());
       if (todayVn.endsWith(monthSuffix)) dateSet.add(todayVn);
+      const filterDayCol = getAdminFilterDayVn();
+      if (filterDayCol) dateSet.add(filterDayCol);
       if (dateSet.size === 0 || ![...dateSet].some((d) => d.endsWith(monthSuffix))) dateSet.add(`01${monthSuffix}`);
 
       dateColumns = Array.from(dateSet).filter((d) => d.endsWith(monthSuffix)).sort((a, b) => {
@@ -4542,6 +4627,26 @@
         }
       });
     });
+
+    // Tô viền cột của ngày đang lọc ở thanh bộ lọc; vừa đổi ngày thì cuộn ngang tới cột đó
+    const filterDayVn = getAdminFilterDayVn();
+    const headRow = thead.rows[0];
+    const colIdx = filterDayVn && headRow ? dateColumns.indexOf(filterDayVn) + 2 : -1;
+    if (colIdx >= 2) {
+      headRow.cells[colIdx].classList.add('filter-day-col');
+      Array.from(tbody.rows).forEach((row) => {
+        if (row.cells.length === headRow.cells.length) row.cells[colIdx].classList.add('filter-day-col');
+      });
+      const scroller = thead.closest('.excel-table-scroll');
+      // Bảng đang ẩn (tab khác) thì để lần hiện bảng sau mới cuộn
+      if (scrollMatrixToFilterDay && scroller && scroller.offsetParent) {
+        const th = headRow.cells[colIdx];
+        scroller.scrollLeft = Math.max(0, th.offsetLeft - scroller.clientWidth / 2 + th.offsetWidth / 2);
+        scrollMatrixToFilterDay = false;
+      }
+    } else {
+      scrollMatrixToFilterDay = false;
+    }
   }
 
   /**
@@ -6126,6 +6231,24 @@
         if (e.target.value) setSelectedMonth(e.target.value);
       });
     });
+
+    // Lọc 1 ngày (‹ ngày ›): chưa chọn ngày thì ‹ ra hôm qua, › ra hôm nay; xem tháng khác thì ra ngày cuối / ngày đầu tháng
+    const shiftAdminFilterDay = (delta) => {
+      const monthKey = getSelectedMonthKey();
+      const today = localIsoToday();
+      if (getAdminFilterDayVn()) {
+        setAdminFilterDay(addDaysToIsoDate(state.adminFilterDay, delta));
+      } else if (today.slice(0, 7) === monthKey) {
+        setAdminFilterDay(delta < 0 ? addDaysToIsoDate(today, -1) : today);
+      } else {
+        const [y, m] = monthKey.split('-').map(Number);
+        setAdminFilterDay(delta < 0 ? `${monthKey}-${pad2(new Date(y, m, 0).getDate())}` : `${monthKey}-01`);
+      }
+    };
+    document.getElementById('btnAdminDayPrev')?.addEventListener('click', () => shiftAdminFilterDay(-1));
+    document.getElementById('btnAdminDayNext')?.addEventListener('click', () => shiftAdminFilterDay(1));
+    document.getElementById('adminFilterDay')?.addEventListener('change', (e) => setAdminFilterDay(e.target.value));
+    document.getElementById('btnAdminDayClear')?.addEventListener('click', () => setAdminFilterDay(''));
 
     document.getElementById('toggleMatrixShowAllDays')?.addEventListener('change', (e) => {
       state.matrixShowAllDays = Boolean(e.target.checked);
