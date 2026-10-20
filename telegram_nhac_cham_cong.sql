@@ -178,14 +178,34 @@ end $$;
 create or replace function ot.telegram_setup(p_token text, p_chat_id text, p_time text default '14:00') returns text
 language plpgsql set search_path = '' as $$
 declare
-  v_token text := btrim(coalesce(p_token, ''));
-  v_chat text := btrim(coalesce(p_chat_id, ''));
+  -- Bỏ khoảng trắng, xuống dòng, ký tự ẩn, dấu < > và dấu nháy hay dính vào khi sao chép
+  v_junk constant text := '[[:space:]<>"'' ​-‍﻿‘’“”]';
+  v_token text := regexp_replace(coalesce(p_token, ''), v_junk, '', 'g');
+  v_chat text := regexp_replace(coalesce(p_chat_id, ''), v_junk, '', 'g');
 begin
+  -- Chép token từ đường link getUpdates thì hay dính chữ "bot" ở đầu
+  v_token := regexp_replace(v_token, '^bot', '', 'i');
   if v_token !~ '^\d+:[A-Za-z0-9_-]{30,}$' then
-    raise exception 'TOKEN bot không đúng dạng. BotFather gửi token dạng 123456789:AAH...';
+    raise exception '%', case
+      when v_token = '' then
+        'Chưa nhập TOKEN. Chạy: select ot.telegram_setup(''TOKEN'', ''CHAT_ID''); thay TOKEN bằng token BotFather gửi.'
+      when upper(v_token) like '%TOKEN%' then
+        'Đang để chữ mẫu TOKEN. Thay chữ TOKEN bằng token thật BotFather gửi (dạng 123456789:AAH...), giữ 2 dấu nháy đơn hai bên.'
+      when v_token ~ '^-?\d+$' then
+        'Ô thứ nhất đang là một con số (giống CHAT_ID). Thứ tự đúng: TOKEN trước, CHAT_ID sau.'
+      else format(
+        'TOKEN bot không đúng dạng (nhận được %s ký tự, bắt đầu bằng "%s"). Token đúng có dạng 123456789:AAH..., dài khoảng 46 ký tự. Chép lại nguyên dòng token BotFather gửi.',
+        length(v_token), left(v_token, 6))
+    end;
   end if;
   if v_chat !~ '^-?\d+$' and v_chat !~ '^@\w{5,}$' then
-    raise exception 'CHAT_ID không đúng dạng. Chat riêng là số dương, nhóm là số âm (ví dụ -1001234567890).';
+    raise exception '%', case
+      when upper(v_chat) like '%CHAT%' then
+        'Đang để chữ mẫu CHAT_ID. Thay bằng số chat id lấy từ getUpdates (chat riêng là số dương, nhóm là số âm, ví dụ -1001234567890).'
+      when v_chat ~ '^\d+:' then
+        'Ô thứ hai đang là TOKEN. Thứ tự đúng: TOKEN trước, CHAT_ID sau.'
+      else 'CHAT_ID không đúng dạng. Chat riêng là số dương, nhóm là số âm (ví dụ -1001234567890).'
+    end;
   end if;
   update ot.telegram_config set bot_token = v_token, chat_id = v_chat, updated_at = now() where id = 1;
   return ot.telegram_set_time(p_time) || ' Gửi thử ngay: select ot.telegram_test();';

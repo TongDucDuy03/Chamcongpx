@@ -40,8 +40,9 @@ Mỗi ngày lúc 14:00, bot gửi vào Telegram danh sách công nhân đang là
    - Gửi vào nhóm: thêm bot vào nhóm Quản đốc, rồi gửi trong nhóm `/start@ten_bot`.
 3. **Lấy CHAT_ID**: mở trình duyệt vào `https://api.telegram.org/bot<TOKEN>/getUpdates` (thay `<TOKEN>`), tìm đoạn `"chat":{"id":...}`. Chat riêng là số dương, nhóm là số âm (ví dụ `-1001234567890`). Nếu thấy `"result":[]` thì gửi lại `/start` rồi tải lại trang.
 4. Supabase → **SQL Editor** → **New query**, dán toàn bộ file `telegram_nhac_cham_cong.sql` → **Run**. Nếu báo cần bật `pg_net` / `pg_cron` thì vào *Database → Extensions* bật lên rồi chạy lại.
-5. Trong SQL Editor chạy (thay token và chat id của bạn):
+5. Trong SQL Editor chạy, **thay chữ TOKEN và CHAT_ID** bằng của bạn, giữ 2 dấu nháy đơn, token trước chat id sau:
    `select ot.telegram_setup('TOKEN', 'CHAT_ID');`
+   Ví dụ: `select ot.telegram_setup('123456789:AAHabc...xyz', '-1001234567890');`
 6. Gửi thử ngay: `select ot.telegram_test();` → vài giây sau Telegram nhận tin `[Gửi thử]`. Không thấy tin thì chạy `select ot.telegram_check();` để xem lý do (sai token, sai chat id, bot bị chặn...).
 
 Đổi giờ nhắc: `select ot.telegram_set_time('15:30');` (giờ Việt Nam). Tắt nhắc: `select ot.telegram_off();`. Đổi token / nơi nhận: chạy lại bước 5.
