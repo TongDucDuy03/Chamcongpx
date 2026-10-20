@@ -46,7 +46,7 @@ function readDb() {
       return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
     }
   } catch (_) {}
-  return { employees: [], records: [], lockedDays: {}, dayModAlerts: {}, holidays: {}, updatedAt: Date.now() };
+  return { employees: [], records: [], lockedDays: {}, dayModAlerts: {}, dayStatuses: {}, holidays: {}, updatedAt: Date.now() };
 }
 
 function writeDb(data) {
@@ -63,6 +63,7 @@ function writeDb(data) {
     records,
     lockedDays: data.lockedDays && typeof data.lockedDays === 'object' ? data.lockedDays : {},
     dayModAlerts: data.dayModAlerts && typeof data.dayModAlerts === 'object' ? data.dayModAlerts : {},
+    dayStatuses: data.dayStatuses && typeof data.dayStatuses === 'object' ? data.dayStatuses : {},
     holidays: data.holidays && typeof data.holidays === 'object' ? data.holidays : {},
     updatedAt: nowMs,
     serverTimeIso: nowIso

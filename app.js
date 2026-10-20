@@ -382,6 +382,7 @@
     matrixShowAllDays: false,
     matrixOnlyPending: false,
     editReturnToQuick: false, // hộp sửa ca mở từ hộp xem nhanh ô bảng công: đóng thì quay lại hộp đó
+    earlyOtherOpen: false, // form công nhân: đang mở ô tự nhập số giờ về sớm (nút "Khác…")
     adminUnlocked: false,
 
     // Phiên đăng nhập & Phân quyền cô lập tài khoản
@@ -396,6 +397,7 @@
     offlineQueue: [],
     lockedDays: {},
     dayModAlerts: {},
+    dayStatuses: {}, // { 'dd/mm/yyyy::Tên': { leave: '' | 'MORNING' | 'AFTERNOON' | 'FULL', earlyHours } }
     holidays: {}, // { 'dd/mm/yyyy': 'Tên ngày nghỉ' }
     matrixMonth: '',
 
@@ -948,9 +950,61 @@
     return isEmployedOn(emp, localIsoToday());
   }
 
+  // ==========================================================================
+  // NGHỈ (P) / VỀ SỚM THEO NGÀY: lưu riêng, không đụng ca tăng ca và file Excel tăng ca
+  // Giờ hành chính: Sáng 07:15–11:15, Chiều 13:15–17:15. Đi muộn cũng ghi vào số giờ về sớm.
+  // ==========================================================================
+
+  const LEAVE_LABELS = { MORNING: 'Nghỉ sáng', AFTERNOON: 'Nghỉ chiều', FULL: 'Nghỉ cả ngày (P)' };
+  const MAX_EARLY_HOURS = 8;
+
+  function normalizeDayStatus(s) {
+    const leave = s && LEAVE_LABELS[s.leave] ? s.leave : '';
+    const early = s ? Math.round(Number(s.earlyHours || 0) * 100) / 100 : 0;
+    const earlyHours = leave === 'FULL' || !(early > 0) ? 0 : Math.min(early, MAX_EARLY_HOURS);
+    return { leave, earlyHours };
+  }
+
+  /** Nghỉ / về sớm đã báo của 1 người 1 ngày: `{ leave: '' | 'MORNING' | 'AFTERNOON' | 'FULL', earlyHours }` */
+  function getDayStatus(empName, workDateVn) {
+    return normalizeDayStatus((state.dayStatuses || {})[`${workDateVn}::${empName}`]);
+  }
+
+  /** Ghi nghỉ / về sớm (đi làm đủ và không về sớm thì xóa hẳn). Trả về true nếu có thay đổi. */
+  function setDayStatus(empName, workDateVn, status) {
+    if (!state.dayStatuses || typeof state.dayStatuses !== 'object') state.dayStatuses = {};
+    const key = `${workDateVn}::${empName}`;
+    const before = getDayStatus(empName, workDateVn);
+    const next = normalizeDayStatus(status);
+    if (before.leave === next.leave && before.earlyHours === next.earlyHours) return false;
+    if (!next.leave && !next.earlyHours) delete state.dayStatuses[key];
+    else state.dayStatuses[key] = next;
+    return true;
+  }
+
+  /** VD: 'Nghỉ sáng • Về sớm 1h' ('' nếu đi làm đủ) */
+  function describeDayStatus(status) {
+    const parts = [];
+    if (status.leave) parts.push(LEAVE_LABELS[status.leave]);
+    if (status.earlyHours > 0) parts.push(`Về sớm ${formatHoursClean(status.earlyHours)}h`);
+    return parts.join(' • ');
+  }
+
+  /**
+   * Ký hiệu bảng công ngày thường: X (đủ) / X/2 (nghỉ nửa ngày) / P (nghỉ cả ngày), + giờ tăng ca, - giờ về sớm.
+   * VD: X+4, X/2+1, X+1-1, P. Về sớm ghi riêng, không trừ vào giờ tăng ca.
+   */
+  function composeDayCode(otHours, status) {
+    const base = status.leave === 'FULL' ? 'P' : status.leave ? 'X/2' : 'X';
+    const ot = otHours > 0 ? `+${formatHoursClean(otHours)}` : '';
+    const early = status.earlyHours > 0 ? `-${formatHoursClean(status.earlyHours)}` : '';
+    return base + ot + early;
+  }
+
   /**
    * Tổng hợp công của 1 nhân viên trong 1 ngày (`workDateVn` = `dd/mm/yyyy`)
-   * Trả về: `{ records, totalHours, code: 'X+4', shortSlots: 'S:1h • Tr:2h • T:1h', detailStr }`
+   * Trả về: `{ records, totalHours, code: 'X+4', shortSlots: 'S:1h • Tr:2h • T:1h', detailStr,
+   *            statusStr: 'Nghỉ sáng', workCredit: 0.5 }` (ngày nghỉ CN/lễ không tính nghỉ / về sớm)
    */
   function getEmployeeDaySummary(empName, workDateVn) {
     const allRecs = [...state.records, ...state.offlineQueue]
@@ -984,7 +1038,11 @@
     });
 
     totalHours = Math.round(totalHours * 100) / 100;
-    const code = totalHours > 0 ? (isRest ? `${formatHoursClean(totalHours)}h` : `X+${formatHoursClean(totalHours)}`) : '';
+    const status = isRest ? normalizeDayStatus(null) : getDayStatus(empName, workDateVn);
+    const hasStatus = Boolean(status.leave || status.earlyHours);
+    let code = '';
+    if (isRest) code = totalHours > 0 ? `${formatHoursClean(totalHours)}h` : '';
+    else if (totalHours > 0 || hasStatus) code = composeDayCode(totalHours, status);
     const codeLabel = code || (isRest ? 'Nghỉ' : 'X');
     const shortSlots = shortParts.join(' • ');
 
@@ -996,19 +1054,29 @@
       codeLabel,
       shortSlots,
       slotBreakdown: shortSlots,
-      detailStr: detailParts.join(', ')
+      detailStr: detailParts.join(', '),
+      leave: status.leave,
+      earlyHours: status.earlyHours,
+      hasStatus,
+      statusStr: describeDayStatus(status),
+      workCredit: isRest ? 0 : status.leave === 'FULL' ? 0 : status.leave ? 0.5 : 1
+    };
+  }
+
+  /** Ảnh chụp công 1 người 1 ngày lúc chốt (để biết sau đó có sửa gì không) */
+  function daySnapshotEntry(sum) {
+    return {
+      totalHours: sum.totalHours,
+      code: sum.codeLabel || 'X',
+      detailStr: sum.detailStr || 'Không tăng ca',
+      statusStr: sum.statusStr || ''
     };
   }
 
   function createDaySnapshot(workDateVn) {
     const snap = {};
     state.employees.forEach((emp) => {
-      const sum = getEmployeeDaySummary(emp.name, workDateVn);
-      snap[emp.name] = {
-        totalHours: sum.totalHours,
-        code: sum.codeLabel || 'X',
-        detailStr: sum.detailStr || 'Không tăng ca'
-      };
+      snap[emp.name] = daySnapshotEntry(getEmployeeDaySummary(emp.name, workDateVn));
     });
     return snap;
   }
@@ -1019,6 +1087,9 @@
     }
     if (!state.dayModAlerts || typeof state.dayModAlerts !== 'object') {
       state.dayModAlerts = {};
+    }
+    if (!state.dayStatuses || typeof state.dayStatuses !== 'object') {
+      state.dayStatuses = {};
     }
     Object.keys(state.lockedDays).forEach((d) => {
       if (state.lockedDays[d] && typeof state.lockedDays[d] === 'object') {
@@ -1071,9 +1142,9 @@
     const monthKey = getSelectedMonthKey();
     const lockedAt = formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate());
     const days = new Set(
-      state.records
-        .filter((r) => r.workDate && isRecordInMonth(r, monthKey) && !state.lockedDays[r.workDate]?.locked)
-        .map((r) => r.workDate)
+      [...state.records.map((r) => r.workDate), ...Object.keys(state.dayStatuses || {}).map((k) => k.split('::')[0])].filter(
+        (d) => d && isRecordInMonth({ workDate: d }, monthKey) && !state.lockedDays[d]?.locked
+      )
     );
     days.forEach((d) => {
       state.lockedDays[d] = { locked: true, lockedAt, snapshot: createDaySnapshot(d) };
@@ -1111,13 +1182,7 @@
 
     const oldSnap =
       (lockInfo.snapshot && lockInfo.snapshot[empName]) ||
-      (beforeSummary
-        ? {
-            totalHours: beforeSummary.totalHours,
-            code: beforeSummary.codeLabel || beforeSummary.code || 'X',
-            detailStr: beforeSummary.detailStr || 'Không tăng ca'
-          }
-        : { totalHours: 0, code: 'X', detailStr: 'Không tăng ca' });
+      (beforeSummary ? daySnapshotEntry(beforeSummary) : { totalHours: 0, code: 'X', detailStr: 'Không tăng ca', statusStr: '' });
 
     const afterSummary = getEmployeeDaySummary(empName, workDateVn);
     const beforeCode = oldSnap.code || 'X';
@@ -1127,7 +1192,9 @@
     // Bấm Lưu lại mà giờ vẫn y như lúc chốt thì không có gì để Quản đốc duyệt: không bôi vàng.
     // Đã có ô vàng từ trước thì giữ nguyên (công nhân không được tự xóa cảnh báo, chỉ Quản đốc duyệt).
     const unchanged =
-      afterCode === beforeCode && (afterSummary.detailStr || 'Không tăng ca') === (oldSnap.detailStr || 'Không tăng ca');
+      afterCode === beforeCode &&
+      (afterSummary.detailStr || 'Không tăng ca') === (oldSnap.detailStr || 'Không tăng ca') &&
+      (afterSummary.statusStr || '') === (oldSnap.statusStr || '');
     if (unchanged && !state.dayModAlerts[alertKey]) {
       state.records.forEach((r) => {
         if (r.employeeName === empName && r.workDate === workDateVn) {
@@ -1155,6 +1222,8 @@
       afterCode,
       afterSlots: afterSummary.slotBreakdown || '0h',
       newDetail: afterSummary.detailStr || 'Đã xóa ca',
+      oldStatus: oldSnap.statusStr || '',
+      newStatus: afterSummary.statusStr || '',
       modifiedAt: formatDateTimeDDMMYYYYHHMM(getAuthoritativeServerDate())
     };
     return true;
@@ -1169,12 +1238,7 @@
     if (!workDate || !employeeName) return;
     if (state.lockedDays[workDate]) {
       if (!state.lockedDays[workDate].snapshot) state.lockedDays[workDate].snapshot = {};
-      const sum = getEmployeeDaySummary(employeeName, workDate);
-      state.lockedDays[workDate].snapshot[employeeName] = {
-        totalHours: sum.totalHours,
-        code: sum.codeLabel || 'X',
-        detailStr: sum.detailStr || 'Không tăng ca'
-      };
+      state.lockedDays[workDate].snapshot[employeeName] = daySnapshotEntry(getEmployeeDaySummary(employeeName, workDate));
     }
     state.records.forEach((r) => {
       if (r.employeeName === employeeName && r.workDate === workDate) {
@@ -1194,12 +1258,7 @@
       const { workDate, employeeName } = state.dayModAlerts[alertKey];
       if (state.lockedDays[workDate]) {
         if (!state.lockedDays[workDate].snapshot) state.lockedDays[workDate].snapshot = {};
-        const sum = getEmployeeDaySummary(employeeName, workDate);
-        state.lockedDays[workDate].snapshot[employeeName] = {
-          totalHours: sum.totalHours,
-          code: sum.codeLabel || 'X',
-          detailStr: sum.detailStr || 'Không tăng ca'
-        };
+        state.lockedDays[workDate].snapshot[employeeName] = daySnapshotEntry(getEmployeeDaySummary(employeeName, workDate));
       }
       delete state.dayModAlerts[alertKey];
     });
@@ -1273,7 +1332,9 @@
     const sum = getEmployeeDaySummary(empName, workDateVn);
     const beforeCode = (alertObj && alertObj.beforeCode) || (snap && snap.code) || 'Đã chốt';
     const beforeDetail = (alertObj && alertObj.oldDetail) || (snap && snap.detailStr) || '';
+    const beforeStatus = alertObj && alertObj.oldStatus !== undefined ? alertObj.oldStatus : (snap && snap.statusStr) || '';
     const changes = describeDayChange(beforeDetail, sum.detailStr, sum.isRest);
+    if (beforeStatus !== sum.statusStr) changes.push(`${beforeStatus || 'Đi làm đủ'} → ${sum.statusStr || 'Đi làm đủ'}`);
     if (changes.length === 0 && beforeCode !== sum.codeLabel) changes.push('Đổi Giờ chốt, giờ làm giữ nguyên');
     return { beforeCode, afterCode: sum.codeLabel, changes };
   }
@@ -1286,6 +1347,7 @@
       state.offlineQueue = [];
       state.lockedDays = {};
       state.dayModAlerts = {};
+      state.dayStatuses = {};
       state.holidays = {};
       return;
     }
@@ -1316,6 +1378,9 @@
         }
         if (parsed.dayModAlerts && typeof parsed.dayModAlerts === 'object') {
           state.dayModAlerts = parsed.dayModAlerts;
+        }
+        if (parsed.dayStatuses && typeof parsed.dayStatuses === 'object') {
+          state.dayStatuses = parsed.dayStatuses;
         }
         if (parsed.holidays && typeof parsed.holidays === 'object') {
           state.holidays = parsed.holidays;
@@ -1410,6 +1475,7 @@
         offlineQueue: state.offlineQueue,
         lockedDays: state.lockedDays,
         dayModAlerts: state.dayModAlerts,
+        dayStatuses: state.dayStatuses,
         holidays: state.holidays,
         updatedAt: Date.now()
       };
@@ -1442,6 +1508,7 @@
               records: state.records,
               lockedDays: state.lockedDays,
               dayModAlerts: state.dayModAlerts,
+              dayStatuses: state.dayStatuses,
               holidays: state.holidays
             })
           });
@@ -1473,6 +1540,9 @@
             }
             if (data.dayModAlerts && typeof data.dayModAlerts === 'object') {
               state.dayModAlerts = data.dayModAlerts;
+            }
+            if (data.dayStatuses && typeof data.dayStatuses === 'object') {
+              state.dayStatuses = data.dayStatuses;
             }
             if (data.holidays && typeof data.holidays === 'object') {
               state.holidays = data.holidays;
@@ -1921,6 +1991,9 @@
 
       if (recIdx < validRecords.length) {
         const rec = validRecords[recIdx];
+        // Dòng ngày Chủ nhật / lễ tô nền khác (style 5, 6 = style 3, 4 có nền): chỉ đổi màu, không đổi dữ liệu nhập
+        const sTxt = isRestDayVn(rec.workDate) ? 5 : 3;
+        const sDate = isRestDayVn(rec.workDate) ? 6 : 4;
         const empObj = employees.find((e) => e.name === rec.employeeName);
         const defaultType = empObj ? empObj.defaultOvertimeType : 'Ngoài khoán';
         const defaultMode = empObj ? empObj.defaultWorkMode : 'Tăng ca tại công ty';
@@ -1931,50 +2004,50 @@
         // Cột C (Bắt đầu), D (Kết thúc), E (Ngày tính công) dùng style s="4" (formatCode="@")
         const cellC =
           !rec.isDriverNoTime && rec.startTime
-            ? `<c r="C${r}" s="4" t="s"><v>${getSstIndex(rec.startTime)}</v></c>`
-            : `<c r="C${r}" s="4"/>`;
+            ? `<c r="C${r}" s="${sDate}" t="s"><v>${getSstIndex(rec.startTime)}</v></c>`
+            : `<c r="C${r}" s="${sDate}"/>`;
         const cellD =
           !rec.isDriverNoTime && rec.endTime
-            ? `<c r="D${r}" s="4" t="s"><v>${getSstIndex(rec.endTime)}</v></c>`
-            : `<c r="D${r}" s="4"/>`;
+            ? `<c r="D${r}" s="${sDate}" t="s"><v>${getSstIndex(rec.endTime)}</v></c>`
+            : `<c r="D${r}" s="${sDate}"/>`;
         const cellE =
           !rec.isDriverNoTime && rec.startTime && rec.endTime && rec.workDate
-            ? `<c r="E${r}" s="4" t="s"><v>${getSstIndex(rec.workDate)}</v></c>`
-            : `<c r="E${r}" s="4"/>`;
+            ? `<c r="E${r}" s="${sDate}" t="s"><v>${getSstIndex(rec.workDate)}</v></c>`
+            : `<c r="E${r}" s="${sDate}"/>`;
 
         // Cột F (Thời gian tăng ca):
         // - Nếu Chế độ Lái xe: ghi số 0 (Mục 1 Hướng dẫn)
         // - Nếu Admin có nhập giờ ghi đè chính thức: ghi số giờ đó (Mục 3 Hướng dẫn)
         // - Mặc định: để trống <c r="F{r}" s="3"/> để phần mềm công ty tự tính!
-        let cellF = `<c r="F${r}" s="3"/>`;
+        let cellF = `<c r="F${r}" s="${sTxt}"/>`;
         if (rec.isDriverNoTime) {
-          cellF = `<c r="F${r}" s="3"><v>0</v></c>`;
+          cellF = `<c r="F${r}" s="${sTxt}"><v>0</v></c>`;
         } else if (rec.overrideHours !== null && rec.overrideHours !== '' && !isNaN(rec.overrideHours)) {
-          cellF = `<c r="F${r}" s="3"><v>${Number(rec.overrideHours)}</v></c>`;
+          cellF = `<c r="F${r}" s="${sTxt}"><v>${Number(rec.overrideHours)}</v></c>`;
         }
 
         // Cột G (Loại tăng ca): Giữ công thức gốc nếu trùng mặc định, hoặc ghi giá trị chọn
         const chosenType = rec.overtimeType || defaultType;
         const cellG =
           chosenType === defaultType
-            ? `<c r="G${r}" s="3" t="str"><f>${formulaG}</f><v>${xmlEscape(chosenType)}</v></c>`
-            : `<c r="G${r}" s="3" t="s"><v>${getSstIndex(chosenType)}</v></c>`;
+            ? `<c r="G${r}" s="${sTxt}" t="str"><f>${formulaG}</f><v>${xmlEscape(chosenType)}</v></c>`
+            : `<c r="G${r}" s="${sTxt}" t="s"><v>${getSstIndex(chosenType)}</v></c>`;
 
         // Cột H (Hình thức tăng ca): Giữ công thức gốc nếu trùng mặc định, hoặc ghi giá trị chọn (VD: Tăng ca trưa / Ngoài công ty)
         const chosenMode = rec.workMode || defaultMode;
         const cellH =
           chosenMode === defaultMode
-            ? `<c r="H${r}" s="3" t="str"><f>${formulaH}</f><v>${xmlEscape(chosenMode)}</v></c>`
-            : `<c r="H${r}" s="3" t="s"><v>${getSstIndex(chosenMode)}</v></c>`;
+            ? `<c r="H${r}" s="${sTxt}" t="str"><f>${formulaH}</f><v>${xmlEscape(chosenMode)}</v></c>`
+            : `<c r="H${r}" s="${sTxt}" t="s"><v>${getSstIndex(chosenMode)}</v></c>`;
 
         // Cột I (Ghi chú)
         const idxNote = getSstIndex(rec.note || '');
-        const cellI = `<c r="I${r}" s="3" t="s"><v>${idxNote}</v></c>`;
+        const cellI = `<c r="I${r}" s="${sTxt}" t="s"><v>${idxNote}</v></c>`;
 
         sheet1RowsXml +=
           `<row r="${r}" spans="1:9">` +
-          `<c r="A${r}" s="3" t="s"><v>${idxEmp}</v></c>` +
-          `<c r="B${r}" s="3" t="s"><v>${idxJob}</v></c>` +
+          `<c r="A${r}" s="${sTxt}" t="s"><v>${idxEmp}</v></c>` +
+          `<c r="B${r}" s="${sTxt}" t="s"><v>${idxJob}</v></c>` +
           cellC +
           cellD +
           cellE +
@@ -2098,19 +2171,22 @@
       '<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>' +
       '<font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>' +
       '</fonts>' +
-      '<fills count="3">' +
+      '<fills count="4">' +
       '<fill><patternFill patternType="none"/></fill>' +
       '<fill><patternFill patternType="gray125"/></fill>' +
       '<fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFFFE4E6"/><bgColor indexed="64"/></patternFill></fill>' +
       '</fills>' +
       '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-      '<cellXfs count="5">' +
+      '<cellXfs count="7">' +
       '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
       '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
       '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
       '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
       '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+      '<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>' +
+      '<xf numFmtId="164" fontId="0" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>' +
       '</cellXfs>' +
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
       '<dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/>' +
@@ -2360,11 +2436,22 @@
     const isoDate = isoDateEl && isoDateEl.value ? isoDateEl.value : localIsoToday();
     const workDateStr = isoDateToVnDate(isoDate);
 
+    // Mục 2 "Đi làm trong ngày": nghỉ buổi nào thì không tính ca tăng ca của buổi đó (ngày nghỉ CN/lễ: bỏ qua)
+    const earlyRaw = Number(document.getElementById('mobileEarlyHours')?.value || 0);
+    const status = isRestDayVn(workDateStr)
+      ? normalizeDayStatus(null)
+      : normalizeDayStatus({ leave: document.getElementById('mobileLeave')?.value || '', earlyHours: earlyRaw });
+    const blocked = {
+      MORNING: status.leave === 'MORNING' || status.leave === 'FULL',
+      LUNCH: status.leave === 'FULL',
+      EVENING: status.leave === 'AFTERNOON' || status.leave === 'FULL'
+    };
+
     // 1. Ca Sáng
     const mCheck = document.getElementById('slotMorningCheck');
     const mStartEl = document.getElementById('slotMorningStart');
     const mEndEl = document.getElementById('slotMorningEnd');
-    const mChecked = mCheck ? Boolean(mCheck.checked) : false;
+    const mChecked = mCheck ? Boolean(mCheck.checked) && !blocked.MORNING : false;
     const mStartHm = mStartEl && mStartEl.value ? mStartEl.value : '06:15';
     const mEndHm = mEndEl && mEndEl.value ? mEndEl.value : '07:15';
     const mStartStr = `${workDateStr} ${mStartHm}`;
@@ -2380,6 +2467,7 @@
       slotKey: 'MORNING',
       slotLabel: 'Sáng',
       checked: mChecked,
+      blocked: blocked.MORNING,
       startHm: mStartHm,
       endHm: mEndHm,
       startTime: mStartStr,
@@ -2393,7 +2481,7 @@
     const lCheck = document.getElementById('slotLunchCheck');
     const lStartEl = document.getElementById('slotLunchStart');
     const lEndEl = document.getElementById('slotLunchEnd');
-    const lChecked = lCheck ? Boolean(lCheck.checked) : false;
+    const lChecked = lCheck ? Boolean(lCheck.checked) && !blocked.LUNCH : false;
     const lStartHm = lStartEl && lStartEl.value ? lStartEl.value : '11:15';
     const lEndHm = lEndEl && lEndEl.value ? lEndEl.value : '13:15';
     const lStartStr = `${workDateStr} ${lStartHm}`;
@@ -2409,6 +2497,7 @@
       slotKey: 'LUNCH',
       slotLabel: 'Trưa',
       checked: lChecked,
+      blocked: blocked.LUNCH,
       startHm: lStartHm,
       endHm: lEndHm,
       startTime: lStartStr,
@@ -2424,7 +2513,7 @@
     const eEndEl = document.getElementById('slotEveningEnd');
     const eOverEl = document.getElementById('slotEveningOvernight');
     const eModeEl = document.getElementById('slotEveningWorkMode');
-    const eChecked = eCheck ? Boolean(eCheck.checked) : false;
+    const eChecked = eCheck ? Boolean(eCheck.checked) && !blocked.EVENING : false;
     const eStartHm = eStartEl && eStartEl.value ? eStartEl.value : '17:15';
     const eEndHm = eEndEl && eEndEl.value ? eEndEl.value : '18:15';
     let eOvernight = eOverEl ? Boolean(eOverEl.checked) : false;
@@ -2451,6 +2540,7 @@
       slotKey: 'EVENING',
       slotLabel: 'Tối',
       checked: eChecked,
+      blocked: blocked.EVENING,
       startHm: eStartHm,
       endHm: eEndHm,
       startTime: eStartStr,
@@ -2462,13 +2552,14 @@
 
     const checkedSlots = [morningSlot, lunchSlot, eveningSlot].filter((s) => s.checked);
     const totalHours = Math.round(checkedSlots.reduce((sum, s) => sum + s.estHours, 0) * 100) / 100;
-    const codeLabel = totalHours > 0 ? `X+${formatHoursClean(totalHours)}` : 'X';
+    const hasStatus = Boolean(status.leave || status.earlyHours);
+    const codeLabel = totalHours > 0 || hasStatus ? composeDayCode(totalHours, status) : 'X';
+    const statusStr = describeDayStatus(status);
 
     const summaryParts = checkedSlots.map(
       (s) => `${s.slotLabel} ${formatHoursClean(s.estHours)}h (${s.startHm}→${s.endHm})`
     );
-    const slotsSummaryText =
-      summaryParts.length > 0 ? summaryParts.join(' • ') : 'Chưa chọn ca nào';
+    const slotsSummaryText = [statusStr, ...summaryParts].filter(Boolean).join(' • ') || 'Chưa chọn ca nào';
 
     const result = {
       isoDate,
@@ -2481,6 +2572,11 @@
       estHours: totalHours,
       codeLabel,
       slotsSummaryText,
+      leave: status.leave,
+      earlyHours: status.earlyHours,
+      earlyRaw,
+      hasStatus,
+      statusStr,
       isDriverNoTime: false
     };
 
@@ -2699,11 +2795,22 @@
       }
     }
 
-    state.formLoadedIso = dayRecords.length > 0 ? isoDate : '';
-    if (dayRecords.length > 0 && !restDayLoad) {
+    // Nghỉ / về sớm đã báo của ngày này
+    const savedStatus = restDayLoad ? normalizeDayStatus(null) : getDayStatus(empName, vnDate);
+    const hasSavedStatus = Boolean(savedStatus.leave || savedStatus.earlyHours);
+    const leaveInput = document.getElementById('mobileLeave');
+    const earlyInput = document.getElementById('mobileEarlyHours');
+    if (leaveInput) leaveInput.value = savedStatus.leave;
+    if (earlyInput) earlyInput.value = String(savedStatus.earlyHours);
+    state.earlyOtherOpen = false;
+
+    state.formLoadedIso = dayRecords.length > 0 || hasSavedStatus ? isoDate : '';
+    if ((dayRecords.length > 0 || hasSavedStatus) && !restDayLoad) {
       if (mCheck) mCheck.checked = false;
       if (lCheck) lCheck.checked = false;
       if (eCheck) eCheck.checked = false;
+    }
+    if (dayRecords.length > 0 && !restDayLoad) {
 
       dayRecords.forEach((rec) => {
         const sParts = String(rec.startTime || '').trim().split(/\s+/);
@@ -2754,6 +2861,52 @@
     }
   }
 
+  // Ca tăng ca của từng nút Chọn nhanh: nghỉ buổi nào thì khóa nút có ca buổi đó
+  const MOBILE_COMBO_SLOTS = {
+    MORN1_LUNCH1: ['MORNING', 'LUNCH'],
+    LUNCH1_EVE1: ['LUNCH', 'EVENING'],
+    LUNCH15_EVE05: ['LUNCH', 'EVENING'],
+    LUNCH2_EVE1: ['LUNCH', 'EVENING'],
+    LUNCH2_EVE2: ['LUNCH', 'EVENING'],
+    ONLY_EVE1: ['EVENING'],
+    ONLY_EVE2: ['EVENING'],
+    MORN1_EVE1: ['MORNING', 'EVENING']
+  };
+
+  /** Mục 2 "Đi làm trong ngày": nút đang chọn, ô tự nhập giờ về sớm, khóa ca tăng ca của buổi nghỉ */
+  function renderMobileDayStatusControls(daily) {
+    document.querySelectorAll('#leavePills .leave-pill').forEach((b) => {
+      b.classList.toggle('active', (b.getAttribute('data-leave') || '') === daily.leave);
+    });
+    const earlyRow = document.getElementById('earlyRow');
+    if (earlyRow) earlyRow.style.display = daily.leave === 'FULL' ? 'none' : '';
+    const earlyStr = String(daily.earlyHours);
+    const isOther = state.earlyOtherOpen || !['0', '0.5', '1', '1.5', '2'].includes(earlyStr);
+    document.querySelectorAll('#earlyRow [data-early]').forEach((b) => {
+      const v = b.getAttribute('data-early');
+      b.classList.toggle('active', v === 'other' ? isOther : !isOther && v === earlyStr);
+    });
+    const otherWrap = document.getElementById('earlyOtherWrap');
+    if (otherWrap) otherWrap.style.display = isOther ? 'flex' : 'none';
+    const sumEl = document.getElementById('dayStatusSummary');
+    if (sumEl) sumEl.textContent = daily.statusStr || 'Đi làm đủ';
+
+    const slots = { MORNING: daily.morningSlot, LUNCH: daily.lunchSlot, EVENING: daily.eveningSlot };
+    [
+      ['MORNING', 'slotCardMorning', 'slotMorningCheck'],
+      ['LUNCH', 'slotCardLunch', 'slotLunchCheck'],
+      ['EVENING', 'slotCardEvening', 'slotEveningCheck']
+    ].forEach(([key, cardId, checkId]) => {
+      document.getElementById(cardId)?.classList.toggle('blocked', Boolean(slots[key].blocked));
+      const chk = document.getElementById(checkId);
+      if (chk) chk.disabled = Boolean(slots[key].blocked);
+    });
+    document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
+      const need = MOBILE_COMBO_SLOTS[btn.getAttribute('data-combo')] || [];
+      btn.disabled = need.some((k) => slots[k].blocked);
+    });
+  }
+
   function renderWorkerMobileView() {
     // Khóa chặt tài khoản công nhân đang đăng nhập: chỉ được xem & báo tăng ca cho chính mình
     if (state.authRole === 'WORKER' && state.loggedInEmployeeName) {
@@ -2797,10 +2950,17 @@
     // Tính toán các ca Sáng / Trưa / Tối đang chọn
     const daily = computeCurrentMobileDailySlots();
 
-    // Ngày nghỉ (Chủ nhật / lễ): chỉ hiện ô "Tôi có đi làm" và giờ làm thực tế
-    document.querySelectorAll('.normal-day-only').forEach((el) => {
-      el.style.display = daily.isRestDay ? 'none' : '';
+    // Ngày nghỉ (Chủ nhật / lễ): chỉ hiện ô "Tôi có đi làm" và giờ làm thực tế. Nghỉ cả ngày (P): ẩn phần tăng ca
+    document.querySelectorAll('.normal-day-only, .ot-only').forEach((el) => {
+      const hide =
+        (daily.isRestDay && el.classList.contains('normal-day-only')) ||
+        (daily.leave === 'FULL' && el.classList.contains('ot-only'));
+      el.style.display = hide ? 'none' : '';
     });
+    // Máy chủ chưa chạy supabase_setup.sql bản mới: ẩn mục Nghỉ / Về sớm, báo tăng ca vẫn dùng bình thường
+    const statusSection = document.getElementById('dayStatusSection');
+    if (statusSection && REMOTE_MODE && !remote.supportsDayStatus) statusSection.style.display = 'none';
+    renderMobileDayStatusControls(daily);
     const restSection = document.getElementById('restDaySection');
     if (restSection) {
       restSection.style.display = daily.isRestDay ? 'block' : 'none';
@@ -2829,7 +2989,9 @@
     if (cardEvening) cardEvening.classList.toggle('active', daily.eveningSlot.checked);
 
     if (lblMorningHrs) {
-      lblMorningHrs.textContent = daily.morningSlot.checked
+      lblMorningHrs.textContent = daily.morningSlot.blocked
+        ? 'Nghỉ sáng: không tăng ca sáng'
+        : daily.morningSlot.checked
         ? `+${formatHoursClean(daily.morningSlot.estHours)} giờ`
         : 'Không tăng ca sáng';
     }
@@ -2839,7 +3001,9 @@
         : 'Không tăng ca trưa';
     }
     if (lblEveningHrs) {
-      lblEveningHrs.textContent = daily.eveningSlot.checked
+      lblEveningHrs.textContent = daily.eveningSlot.blocked
+        ? 'Nghỉ chiều: không tăng ca tối'
+        : daily.eveningSlot.checked
         ? `+${formatHoursClean(daily.eveningSlot.estHours)} giờ`
         : 'Không tăng ca tối';
     }
@@ -2886,9 +3050,13 @@
     });
 
     // Cập nhật huy hiệu Ký hiệu công ngày (X+4)
+    const codeWithHours =
+      daily.totalHours > 0 || !daily.hasStatus
+        ? `${daily.codeLabel} (${formatHoursClean(daily.totalHours)} giờ)`
+        : daily.codeLabel;
     const dayCodeBadge = document.getElementById('mobileDayCodeBadge');
     if (dayCodeBadge) {
-      dayCodeBadge.textContent = `${daily.codeLabel} (${formatHoursClean(daily.totalHours)} giờ)`;
+      dayCodeBadge.textContent = codeWithHours;
     }
 
     // Thông báo nếu ngày này đã từng báo tăng ca hoặc đã bị Quản đốc chốt công
@@ -2906,9 +3074,10 @@
       if (unsupportedReason) {
         existingNotice.style.display = 'block';
         existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> Quản đốc đã nhập chi tiết: <strong>${escapeHtml(existingSummary.detailStr)}</strong>. ${escapeHtml(unsupportedReason)}, form báo nhanh không sửa đúng được nên đã khóa nút Lưu. Cần sửa ngày này thì nhờ Quản đốc.`;
-      } else if (existingSummary.records.length > 0) {
+      } else if (existingSummary.records.length > 0 || existingSummary.hasStatus) {
+        const savedParts = [existingSummary.statusStr, existingSummary.slotBreakdown].filter(Boolean).join(' • ');
         existingNotice.style.display = 'block';
-        existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> bạn đã lưu <strong>${existingSummary.records.length} ca (${escapeHtml(existingSummary.codeLabel)} • ${escapeHtml(existingSummary.slotBreakdown)})</strong>. Bạn có thể chỉnh lại các ca bên dưới rồi bấm Lưu để cập nhật.`;
+        existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> bạn đã lưu <strong>${escapeHtml(existingSummary.codeLabel)} (${escapeHtml(savedParts)})</strong>. Bạn có thể chỉnh lại bên dưới rồi bấm Lưu để cập nhật.`;
       } else {
         existingNotice.style.display = 'none';
       }
@@ -2930,21 +3099,26 @@
     const colHours = document.getElementById('previewColHours');
     const btnSubmitText = document.getElementById('btnSubmitMobileText');
 
-    if (estBadge) estBadge.textContent = `${daily.codeLabel} (${formatHoursClean(daily.totalHours)} giờ)`;
+    if (estBadge) estBadge.textContent = codeWithHours;
     if (colDate) colDate.textContent = daily.workDate;
     if (slotsSumEl) slotsSumEl.textContent = daily.slotsSummaryText;
-    if (colHours) colHours.textContent = `${daily.codeLabel} (${formatHoursClean(daily.totalHours)} giờ)`;
+    if (colHours) colHours.textContent = codeWithHours;
 
+    const hasExistingDay = existingSummary.records.length > 0 || existingSummary.hasStatus;
     if (btnSubmitText && !state.isWaitingServerAck) {
-      if (existingSummary.records.length > 0) {
+      const codeText =
+        daily.totalHours > 0 ? `${daily.codeLabel} • ${formatHoursClean(daily.totalHours)} giờ` : daily.codeLabel;
+      if (hasExistingDay) {
         btnSubmitText.textContent =
-          daily.totalHours > 0
-            ? `Cập nhật ngày ${daily.workDate} (${daily.codeLabel} • ${formatHoursClean(daily.totalHours)} giờ)`
+          daily.totalHours > 0 || daily.hasStatus
+            ? `Cập nhật ngày ${daily.workDate} (${codeText})`
             : `Lưu: bỏ hết tăng ca ngày ${daily.workDate}`;
       } else {
         btnSubmitText.textContent =
           daily.totalHours > 0
-            ? `Lưu báo tăng ca ngày ${daily.workDate} (${daily.codeLabel} • ${formatHoursClean(daily.totalHours)} giờ)`
+            ? `Lưu báo tăng ca ngày ${daily.workDate} (${codeText})`
+            : daily.hasStatus
+            ? `Lưu ngày ${daily.workDate} (${codeText})`
             : `Vui lòng tích chọn ít nhất 1 ca tăng ca`;
       }
     }
@@ -2955,25 +3129,25 @@
       if (state.formReturnTab) {
         editBar.style.display = 'flex';
         const t = document.getElementById('editModeTitle');
-        if (t) t.textContent = `${existingSummary.records.length > 0 ? 'Đang sửa' : 'Báo tăng ca'} ngày ${daily.workDate}`;
+        if (t) t.textContent = `${hasExistingDay ? 'Đang sửa' : 'Báo tăng ca'} ngày ${daily.workDate}`;
       } else {
         editBar.style.display = 'none';
       }
     }
     const delBtn = document.getElementById('btnDeleteDayFromForm');
-    if (delBtn) delBtn.style.display = existingSummary.records.length > 0 ? 'block' : 'none';
+    if (delBtn) delBtn.style.display = hasExistingDay ? 'block' : 'none';
 
     // Nút Lưu: khóa khi chưa chọn gì để tránh bấm nhầm
     const submitBtn = document.getElementById('btnSubmitMobileOvertime');
     if (submitBtn && !state.isWaitingServerAck) {
-      const nothingChosen = daily.checkedSlots.length === 0 && existingSummary.records.length === 0;
+      const nothingChosen = daily.checkedSlots.length === 0 && !daily.hasStatus && !hasExistingDay;
       submitBtn.disabled = nothingChosen || Boolean(unsupportedReason);
       if (unsupportedReason && btnSubmitText) {
         btnSubmitText.textContent = 'Ngày này cần Quản đốc sửa';
       } else if (nothingChosen && btnSubmitText) {
         btnSubmitText.textContent = daily.isRestDay
           ? 'Nếu có đi làm, tích "Tôi có đi làm ngày này"'
-          : 'Chọn ca làm ở trên rồi bấm Lưu';
+          : 'Chọn ca tăng ca hoặc nghỉ / về sớm rồi bấm Lưu';
       }
     }
 
@@ -3028,6 +3202,9 @@
     setVal('slotEveningEnd', '18:15');
     setVal('restStart', '07:15');
     setVal('restEnd', '15:15');
+    setVal('mobileLeave', '');
+    setVal('mobileEarlyHours', '0');
+    state.earlyOtherOpen = false;
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((b) => b.classList.remove('active'));
 
     setVal('mobileJobContent', DEFAULT_JOB_CONTENT);
@@ -3043,7 +3220,8 @@
     // Ngày hôm nay đã có ca thì nạp sẵn vào form: báo thêm ca Tối không làm mất ca Sáng/Trưa đã báo
     if (!opts.skipExisting && !opts.keepDate) {
       const empNow = currentWorkerName();
-      if (empNow && getEmployeeDaySummary(empNow, isoDateToVnDate(today)).records.length > 0) {
+      const todaySum = empNow ? getEmployeeDaySummary(empNow, isoDateToVnDate(today)) : null;
+      if (todaySum && (todaySum.records.length > 0 || todaySum.hasStatus)) {
         loadExistingDayIntoMobileForm(empNow, today, false);
       }
     }
@@ -3102,19 +3280,20 @@
 
   async function deleteWorkerDay(empName, vnDate) {
     const beforeSummary = getEmployeeDaySummary(empName, vnDate);
-    if (beforeSummary.records.length === 0) return false;
+    if (beforeSummary.records.length === 0 && !beforeSummary.hasStatus) return false;
     const locked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
     const msg = locked
-      ? `Ngày ${vnDate} đã được Quản đốc chốt công. Xóa thì ô công của bạn sẽ bị bôi vàng để Quản đốc kiểm tra lại.\n\nBạn chắc chắn muốn xóa báo tăng ca ngày này?`
-      : `Xóa toàn bộ báo tăng ca ngày ${vnDate} (${beforeSummary.codeLabel})?`;
+      ? `Ngày ${vnDate} đã được Quản đốc chốt công. Xóa thì ô công của bạn sẽ bị bôi vàng để Quản đốc kiểm tra lại.\n\nBạn chắc chắn muốn xóa báo ngày này (tăng ca, nghỉ, về sớm)?`
+      : `Xóa toàn bộ báo ngày ${vnDate} (${beforeSummary.codeLabel}): tăng ca, nghỉ, về sớm?`;
     if (!window.confirm(msg)) return false;
     state.records = state.records.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
     state.offlineQueue = state.offlineQueue.filter((r) => !(r.employeeName === empName && r.workDate === vnDate));
+    setDayStatus(empName, vnDate, null);
     if (locked) checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
     saveLocalState(true);
     const delRes = await syncWithCentralServer(true);
     if (delRes && delRes.rejected) return false;
-    showToast(`Đã xóa báo tăng ca ngày <strong>${escapeHtml(vnDate)}</strong>.`, 'success');
+    showToast(`Đã xóa báo ngày <strong>${escapeHtml(vnDate)}</strong>.`, 'success');
     return true;
   }
 
@@ -3148,6 +3327,17 @@
       btnFilterAll.classList.toggle('active', !useMonthFilter);
     }
 
+    // Ngày chỉ báo nghỉ / về sớm (không có ca tăng ca) cũng hiện trong lịch sử
+    const statusOnlyDates = Object.keys(state.dayStatuses || {})
+      .map((k) => k.split('::'))
+      .filter(
+        ([d, name]) =>
+          name === empName &&
+          !myRecords.some((r) => r.workDate === d) &&
+          (!useMonthFilter || isRecordInMonth({ workDate: d }, activeMonthKey))
+      )
+      .map(([d]) => d);
+
     const totalHours = myRecords.reduce((sum, r) => sum + computeEstimatedHours(r), 0);
     if (badgeEl) {
       badgeEl.textContent = `${myRecords.length} ca • ${formatHoursClean(totalHours)} giờ`;
@@ -3157,7 +3347,7 @@
     }
 
     if (!listEl) return;
-    if (myRecords.length === 0) {
+    if (myRecords.length === 0 && statusOnlyDates.length === 0) {
       listEl.innerHTML = `
         <div style="text-align: center; padding: 1.75rem 1rem; color: var(--text-secondary); font-size: 0.85rem;">
           Bạn chưa báo ca tăng ca nào.
@@ -3173,6 +3363,7 @@
       if (!dayMap.has(d)) dayMap.set(d, []);
       dayMap.get(d).push(rec);
     });
+    statusOnlyDates.forEach((d) => dayMap.set(d, []));
 
     const sortedDates = Array.from(dayMap.keys()).sort((a, b) => {
       const msA = parseVnDateTimeToMs(`${a} 00:00`) || 0;
@@ -3193,8 +3384,9 @@
               <div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;">
                 <span style="font-weight:800;font-size:0.88rem;color:var(--text-main);">Ngày ${escapeHtml(workDate)}</span>
                 <span style="background:var(--primary);color:#fff;padding:0.12rem 0.5rem;border-radius:999px;font-size:0.76rem;font-weight:800;">
-                  ${escapeHtml(daySum.codeLabel)} (${formatHoursClean(daySum.totalHours)}h)
+                  ${escapeHtml(daySum.codeLabel)}${daySum.totalHours > 0 || !daySum.hasStatus ? ` (${formatHoursClean(daySum.totalHours)}h)` : ''}
                 </span>
+                ${daySum.statusStr ? `<span class="history-status-tag">${escapeHtml(daySum.statusStr)}</span>` : ''}
                 ${
                   modAlert
                     ? `<span style="background:#f59e0b;color:#fff;padding:0.1rem 0.45rem;border-radius:4px;font-size:0.7rem;font-weight:700;">Đã sửa sau chốt (${escapeHtml(modAlert.beforeCode)} → ${escapeHtml(modAlert.afterCode)})</span>`
@@ -3213,6 +3405,7 @@
               </button>
             </div>
             <div>
+              ${recs.length === 0 ? '<div class="history-shift-row sub-meta-text">Không có ca tăng ca</div>' : ''}
               ${recs
                 .map((rec) => {
                   const hrs = computeEstimatedHours(rec);
@@ -3333,6 +3526,8 @@
     let otDays = 0;
     let totalHours = 0;
     let workDays = 0;
+    let leaveDays = 0;
+    let earlyTotal = 0;
     let cells = '';
     let listRows = '';
     const dowNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
@@ -3347,6 +3542,7 @@
       const isFuture = iso > todayIso;
       const sum = getEmployeeDaySummary(empName, vn);
       const hasOt = sum.totalHours > 0;
+      const hasMark = hasOt || sum.hasStatus;
       const isRest = isRestDayVn(vn);
       const holidayName = getHolidayName(vn);
       const employed = isEmployedOn(empObj, iso);
@@ -3357,11 +3553,15 @@
       let code = '';
       if (!employed) {
         code = '';
-      } else if (hasOt) {
+      } else if (hasMark) {
         code = sum.code;
-        otDays += 1;
-        totalHours += sum.totalHours;
-        if (!isRest) workDays += 1;
+        if (hasOt) {
+          otDays += 1;
+          totalHours += sum.totalHours;
+        }
+        if (!isRest) workDays += sum.workCredit;
+        leaveDays += sum.leave === 'FULL' ? 1 : sum.leave ? 0.5 : 0;
+        earlyTotal += sum.earlyHours;
       } else if (!isFuture) {
         if (isRest) {
           code = holidayName ? 'Lễ' : 'CN';
@@ -3373,6 +3573,7 @@
 
       const cls = ['cal-cell'];
       if (hasOt) cls.push('has-ot');
+      if (employed && sum.hasStatus) cls.push('leave');
       if (isRest && holidayName) cls.push('holiday');
       else if (isSunday) cls.push('sunday');
       if (isFuture) cls.push('future');
@@ -3385,8 +3586,14 @@
       const tip = holidayName ? ` title="${escapeHtml(holidayName)}"` : '';
       cells += `<button type="button" class="${cls.join(' ')}" data-iso="${iso}"${tip}><span class="cal-day-num">${day}</span><span class="cal-code">${escapeHtml(code)}</span></button>`;
 
-      if (employed && (hasOt || (!isFuture && !isRest))) {
-        listRows += `<div class="cal-list-row${hasOt ? ' has-ot' : ''}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${hasOt ? escapeHtml(sum.detailStr) + (isRest ? ' (' + escapeHtml(getRestDayLabel(vn)) + ')' : '') : 'Không tăng ca'}</span></div>`;
+      if (employed && (hasMark || (!isFuture && !isRest))) {
+        const otText = hasOt ? sum.detailStr + (isRest ? ` (${getRestDayLabel(vn)})` : '') : '';
+        const detailText = [sum.statusStr, otText].filter(Boolean).join(' • ') || 'Không tăng ca';
+        const rowCls = ['cal-list-row'];
+        if (hasOt) rowCls.push('has-ot');
+        if (sum.hasStatus) rowCls.push('leave');
+        if (isRest) rowCls.push('rest');
+        listRows += `<div class="${rowCls.join(' ')}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${escapeHtml(detailText)}</span></div>`;
       }
     }
 
@@ -3400,7 +3607,15 @@
     };
     setText('calSumOtDays', String(otDays));
     setText('calSumHours', formatHoursClean(Math.round(totalHours * 100) / 100));
-    setText('calSumWorkDays', String(workDays));
+    setText('calSumWorkDays', formatHoursClean(workDays));
+    const leaveLine = document.getElementById('calSumLeaveLine');
+    if (leaveLine) {
+      const parts = [];
+      if (leaveDays > 0) parts.push(`Nghỉ (P): <strong>${formatHoursClean(leaveDays)}</strong> ngày`);
+      if (earlyTotal > 0) parts.push(`Về sớm: <strong>${formatHoursClean(earlyTotal)}</strong> giờ`);
+      leaveLine.style.display = parts.length ? 'block' : 'none';
+      leaveLine.innerHTML = parts.join(' • ');
+    }
 
     const detail = document.getElementById('calDayDetail');
     if (detail) {
@@ -3410,9 +3625,10 @@
         const locked = Boolean(state.lockedDays[vn] && state.lockedDays[vn].locked);
         detail.style.display = 'block';
         const restNote = isRestDayVn(vn) ? ` (${escapeHtml(getRestDayLabel(vn))} - ngày nghỉ)` : '';
+        const dayText = [sum.statusStr, sum.totalHours > 0 ? sum.detailStr : ''].filter(Boolean).join(' • ');
         detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}${restNote}: ${escapeHtml(sum.code || sum.codeLabel)}</strong></div>
-          <div class="sub-meta-text">${sum.totalHours > 0 ? escapeHtml(sum.detailStr) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
-          ${state.calSelectedIso > localIsoToday() ? '<div class="sub-meta-text" style="margin-top:0.4rem;">Chưa tới ngày này nên chưa báo được.</div>' : `<button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;min-height:44px;">${sum.totalHours > 0 ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca ngày này')}</button>`}`;
+          <div class="sub-meta-text">${dayText ? escapeHtml(dayText) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
+          ${state.calSelectedIso > localIsoToday() ? '<div class="sub-meta-text" style="margin-top:0.4rem;">Chưa tới ngày này nên chưa báo được.</div>' : `<button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;min-height:44px;">${sum.totalHours > 0 || sum.hasStatus ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca / nghỉ ngày này')}</button>`}`;
       } else {
         detail.style.display = 'none';
       }
@@ -3535,12 +3751,29 @@
     const isDayLocked = Boolean(state.lockedDays && state.lockedDays[daily.workDate]?.locked);
     const authoritativeServerStr = formatDateTimeDDMMYYYYHHMM(new Date(nowServerMs));
 
-    // Trường hợp bỏ tích cả 3 ca: Nếu ngày đó đã có bản ghi thì cho phép xóa sạch tăng ca ngày đó (về công X)
+    // Nghỉ / về sớm (mục 2) lưu cùng lúc với ca tăng ca
+    if (!daily.isRestDay && daily.leave !== 'FULL' && (!(daily.earlyRaw >= 0) || daily.earlyRaw > MAX_EARLY_HOURS)) {
+      playFeedbackSound('ERROR');
+      showToast(`Số giờ về sớm phải từ 0 đến ${MAX_EARLY_HOURS} giờ.`, 'error');
+      return;
+    }
+    const dayStatus = { leave: daily.leave, earlyHours: daily.earlyHours };
+    const beforeStatus = getDayStatus(activeWorkerName, daily.workDate);
+    const statusChanged = beforeStatus.leave !== dayStatus.leave || beforeStatus.earlyHours !== dayStatus.earlyHours;
+    if (statusChanged && REMOTE_MODE && !remote.supportsDayStatus) {
+      playFeedbackSound('ERROR');
+      showToast('Máy chủ chưa bật tính năng Nghỉ / Về sớm. Nhờ Quản đốc chạy lại file supabase_setup.sql trong Supabase rồi báo lại.', 'error');
+      return;
+    }
+
+    // Không tích ca nào: lưu nghỉ / về sớm (nếu có) và bỏ hết tăng ca đã báo của ngày đó
     if (daily.checkedSlots.length === 0) {
-      if (beforeSummary.records.length > 0) {
+      if (beforeSummary.records.length > 0 || daily.hasStatus || beforeSummary.hasStatus) {
+        const removedCount = beforeSummary.records.length;
         state.records = state.records.filter(
           (r) => !(r.employeeName === activeWorkerName && r.workDate === daily.workDate)
         );
+        setDayStatus(activeWorkerName, daily.workDate, dayStatus);
         if (isDayLocked) {
           checkAndTriggerPostLockAlert(activeWorkerName, daily.workDate, beforeSummary);
         }
@@ -3557,9 +3790,12 @@
         state.calMonth = daily.isoDate.slice(0, 7);
         state.calSelectedIso = daily.isoDate;
         renderAll();
+        const afterSum = getEmployeeDaySummary(activeWorkerName, daily.workDate);
         showToast(
-          `Đã xóa các ca tăng ca ngày <strong>${escapeHtml(daily.workDate)}</strong> (Chuyển về công X).`,
-          'warn'
+          afterSum.hasStatus
+            ? `Đã lưu ngày <strong>${escapeHtml(daily.workDate)}</strong>: <strong>${escapeHtml(afterSum.codeLabel)}</strong> (${escapeHtml(afterSum.statusStr)})${removedCount ? `, bỏ ${removedCount} ca tăng ca đã báo` : ''}.`
+            : `Đã xóa các ca tăng ca ngày <strong>${escapeHtml(daily.workDate)}</strong> (Chuyển về công X).`,
+          afterSum.hasStatus ? 'success' : 'warn'
         );
         return;
       }
@@ -3633,6 +3869,7 @@
     }
 
     state.lastSubmitServerMs = nowServerMs;
+    setDayStatus(activeWorkerName, daily.workDate, dayStatus);
 
     // Nếu ngày này đã được Quản đốc chốt công -> kích hoạt cảnh báo bôi vàng nếu tổng giờ/ca thay đổi
     let triggeredYellow = false;
@@ -4066,6 +4303,7 @@
       state.records.forEach((r) => {
         if (r.workDate) dateSet.add(r.workDate);
       });
+      Object.keys(state.dayStatuses || {}).forEach((k) => dateSet.add(k.split('::')[0]));
       Object.keys(state.lockedDays || {}).forEach((d) => {
         if (state.lockedDays[d]?.locked) dateSet.add(d);
       });
@@ -4097,6 +4335,7 @@
             const thCls = ['matrix-day-th'];
             if (isLocked) thCls.push('locked-col');
             if (isTodayCol) thCls.push('today-col');
+            if (isRestDayVn(dStr)) thCls.push('rest-day-col');
             const restHead = isRestDayVn(dStr) ? `<div class="matrix-head-rest">${escapeHtml(getRestDayLabel(dStr))}</div>` : '';
             return `
               <th class="${thCls.join(' ')}" style="min-width:96px;">
@@ -4117,6 +4356,8 @@
           .join('')}
         <th style="min-width:90px;background:#eff6ff;color:#1e40af;">Số ngày TC</th>
         <th style="min-width:95px;background:#eff6ff;color:#1e40af;">Tổng giờ TC</th>
+        <th style="min-width:80px;background:#f5f3ff;color:#5b21b6;">Nghỉ (P)</th>
+        <th style="min-width:80px;background:#f5f3ff;color:#5b21b6;">Về sớm</th>
         <th style="min-width:125px;background:#eff6ff;color:#1e40af;">Tổng hợp tháng</th>
       </tr>
     `;
@@ -4153,6 +4394,18 @@
         empOtDaysCount = uniqueEmpDates.size;
         empMonthTotalHours = Math.round(allEmpRecs.reduce((s, r) => s + computeEstimatedHours(r), 0) * 100) / 100;
 
+        // Nghỉ (P) / về sớm cả tháng: nghỉ cả ngày = 1, nửa ngày = 0.5 (ngày nghỉ CN/lễ không tính)
+        let empLeaveDays = 0;
+        let empEarlyHours = 0;
+        Object.keys(state.dayStatuses || {}).forEach((k) => {
+          const [d, name] = k.split('::');
+          if (name !== emp.name || !isRecordInMonth({ workDate: d }, matrixMonth) || isRestDayVn(d)) return;
+          const st = getDayStatus(emp.name, d);
+          empLeaveDays += st.leave === 'FULL' ? 1 : st.leave ? 0.5 : 0;
+          empEarlyHours += st.earlyHours;
+        });
+        empEarlyHours = Math.round(empEarlyHours * 100) / 100;
+
         const cellsHtml = dateColumns
           .map((dStr) => {
             const sum = getEmployeeDaySummary(emp.name, dStr);
@@ -4160,6 +4413,9 @@
             const modAlert = state.dayModAlerts ? state.dayModAlerts[alertKey] : null;
             const hasModifiedRow = sum.records.some((r) => r.modifiedAfterLock);
             const isTodayCell = dStr === todayVnHeader;
+            const restCls = sum.isRest ? ' rest-day-col' : '';
+            const leaveCls = sum.hasStatus ? ' has-leave' : '';
+            const subLine = [sum.statusStr, sum.slotBreakdown].filter(Boolean).join(' • ');
 
             if (modAlert || hasModifiedRow) {
               const ch = getModAlertChange(emp.name, dStr);
@@ -4167,12 +4423,12 @@
               const moreChanges = ch.changes.length > 2 ? `<span class="matrix-change-line">+${ch.changes.length - 2} thay đổi khác</span>` : '';
               return `
                 <td
-                  class="matrix-cell modified-yellow-cell"
+                  class="matrix-cell modified-yellow-cell${leaveCls}"
                   data-emp="${escapeHtml(emp.name)}"
                   data-date="${escapeHtml(dStr)}"
                   title="Sửa sau khi chốt công: ${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}${ch.changes.length ? `. ${escapeHtml(ch.changes.join('; '))}` : ''}. Bấm để xem/sửa nhanh."
                 >
-                  <span class="matrix-code-pill">${escapeHtml(sum.totalHours > 0 ? sum.codeLabel : 'X (0h)')}</span>
+                  <span class="matrix-code-pill">${escapeHtml(sum.totalHours > 0 || sum.hasStatus ? sum.codeLabel : 'X (0h)')}</span>
                   <span class="matrix-diff-tag">${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}</span>
                   ${changeLines}${moreChanges}
                   <div>
@@ -4190,16 +4446,16 @@
               `;
             }
 
-            if (sum.totalHours > 0) {
+            if (sum.totalHours > 0 || sum.hasStatus) {
               return `
                 <td
-                  class="matrix-cell has-overtime"
+                  class="matrix-cell${sum.totalHours > 0 ? ' has-overtime' : ''}${leaveCls}${restCls}"
                   data-emp="${escapeHtml(emp.name)}"
                   data-date="${escapeHtml(dStr)}"
-                  title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: ${escapeHtml(sum.codeLabel)} (${escapeHtml(sum.slotBreakdown)}). Bấm để xem hoặc chỉnh nhanh."
+                  title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: ${escapeHtml(sum.codeLabel)} (${escapeHtml(subLine)}). Bấm để xem hoặc chỉnh nhanh."
                 >
                   <span class="matrix-code-pill">${escapeHtml(sum.codeLabel)}</span>
-                  <span class="matrix-slot-sub">${escapeHtml(sum.slotBreakdown)}</span>
+                  <span class="matrix-slot-sub">${escapeHtml(subLine)}</span>
                 </td>
               `;
             }
@@ -4208,7 +4464,7 @@
               return `<td class="matrix-cell off-col" title="${escapeHtml(emp.name)} chưa vào làm hoặc đã nghỉ việc"><span class="matrix-empty-dot">–</span></td>`;
             }
             if (sum.isRest) {
-              return `<td class="matrix-cell rest-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ (Bấm để thêm ca nếu có đi làm)"><span class="matrix-empty-dot">–</span></td>`;
+              return `<td class="matrix-cell rest-col rest-day-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ (Bấm để thêm ca nếu có đi làm)"><span class="matrix-empty-dot">–</span></td>`;
             }
             return `
               <td
@@ -4235,6 +4491,8 @@
             ${cellsHtml}
             <td class="matrix-summary-col">${empOtDaysCount} ngày</td>
             <td class="matrix-summary-col">+${formatHoursClean(empMonthTotalHours)}h</td>
+            <td class="matrix-summary-col leave-sum">${empLeaveDays > 0 ? `${formatHoursClean(empLeaveDays)} ngày` : '–'}</td>
+            <td class="matrix-summary-col leave-sum">${empEarlyHours > 0 ? `${formatHoursClean(empEarlyHours)}h` : '–'}</td>
             <td class="matrix-summary-col" style="color:#047857;">
               ${empOtDaysCount} công TC (+${formatHoursClean(empMonthTotalHours)}h)
             </td>
@@ -4324,7 +4582,25 @@
       dateEl.textContent = `${dowLabel}ngày ${vnDate}${getHolidayName(vnDate) ? ` (${getHolidayName(vnDate)})` : ''} • ${isLocked ? 'Đã chốt bảng công' : 'Đang mở'}`;
     }
     if (badgeEl) {
-      badgeEl.textContent = `${sum.codeLabel} (${formatHoursClean(sum.totalHours)} giờ)`;
+      badgeEl.textContent =
+        sum.totalHours > 0 || !sum.hasStatus ? `${sum.codeLabel} (${formatHoursClean(sum.totalHours)} giờ)` : sum.codeLabel;
+    }
+    // Nghỉ / về sớm của ngày (ngày nghỉ CN/lễ không có)
+    const statusBox = document.getElementById('matrixQuickStatusBox');
+    if (statusBox) statusBox.style.display = sum.isRest ? 'none' : '';
+    const earlyStr = String(sum.earlyHours);
+    const earlyPreset = ['0', '0.5', '1', '1.5', '2'].includes(earlyStr);
+    document.querySelectorAll('#matrixQuickStatusBox [data-quick-leave]').forEach((b) => {
+      b.classList.toggle('active', (b.getAttribute('data-quick-leave') || '') === sum.leave);
+    });
+    document.querySelectorAll('#matrixQuickStatusBox [data-quick-early]').forEach((b) => {
+      b.classList.toggle('active', earlyPreset && b.getAttribute('data-quick-early') === earlyStr);
+      b.disabled = sum.leave === 'FULL';
+    });
+    const earlyInput = document.getElementById('matrixQuickEarlyInput');
+    if (earlyInput) {
+      earlyInput.value = earlyPreset ? '' : earlyStr;
+      earlyInput.disabled = sum.leave === 'FULL';
     }
     if (btnApprove) {
       btnApprove.style.display = hasYellow ? 'inline-flex' : 'none';
@@ -4361,7 +4637,7 @@
     if (sum.records.length === 0) {
       listEl.innerHTML = `
         <div style="padding: 0.9rem; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); color: var(--text-secondary); font-size: 0.83rem; text-align: center;">
-          Chưa có ca tăng ca nào trong ngày này (Ký hiệu <strong>${escapeHtml(sum.codeLabel)}</strong>).<br/>
+          Chưa có ca tăng ca nào trong ngày này (Ký hiệu <strong>${escapeHtml(sum.codeLabel)}</strong>${sum.statusStr ? ` • ${escapeHtml(sum.statusStr)}` : ''}).<br/>
           Chọn nhanh tổ hợp ca ở dưới hoặc bấm <strong>"+ Thêm 1 ca tùy chỉnh"</strong>.
         </div>
       `;
@@ -4413,6 +4689,35 @@
         });
       });
     }
+  }
+
+  /** Quản đốc đặt nghỉ / về sớm cho 1 ô bảng công (`patch` = { leave } hoặc { earlyHours }) */
+  function applyAdminQuickDayStatus(empName, vnDate, patch) {
+    if (!empName || !vnDate || isRestDayVn(vnDate)) return;
+    if (REMOTE_MODE && !remote.supportsDayStatus) {
+      showToast('Máy chủ chưa bật tính năng Nghỉ / Về sớm: hãy chạy lại file supabase_setup.sql trong Supabase (SQL Editor) rồi tải lại trang.', 'error');
+      return;
+    }
+    const early = patch.earlyHours;
+    if (early !== undefined && (!(Number(early) >= 0) || Number(early) > MAX_EARLY_HOURS)) {
+      showToast(`Số giờ về sớm phải từ 0 đến ${MAX_EARLY_HOURS} giờ.`, 'error');
+      return;
+    }
+    const beforeSummary = getEmployeeDaySummary(empName, vnDate);
+    if (!setDayStatus(empName, vnDate, { ...getDayStatus(empName, vnDate), ...patch })) return;
+    if (state.lockedDays && state.lockedDays[vnDate]?.locked) {
+      checkAndTriggerPostLockAlert(empName, vnDate, beforeSummary);
+    }
+    saveLocalState(true);
+    syncWithCentralServer(true);
+    playFeedbackSound('SUCCESS');
+    renderAll();
+    renderMatrixCellQuickModal();
+    const after = getEmployeeDaySummary(empName, vnDate);
+    showToast(
+      `Ngày <strong>${escapeHtml(vnDate)}</strong> của <strong>${escapeHtml(empName)}</strong>: <strong>${escapeHtml(after.codeLabel)}</strong> (${escapeHtml(after.statusStr || 'Đi làm đủ')}).`,
+      'success'
+    );
   }
 
   function applyAdminQuickCellCombo(empName, vnDate, comboCode) {
@@ -4645,7 +4950,7 @@
         }
 
         html += `
-          <tr class="data-row ${isModAfterLock ? 'modified-after-lock' : ''}">
+          <tr class="data-row ${isModAfterLock ? 'modified-after-lock' : ''} ${isRestDayVn(rec.workDate) ? 'rest-day-row' : ''}">
             <td class="excel-row-num">${excelRow}</td>
             <td style="font-weight: 800; color: var(--text-main);">
               ${escapeHtml(rec.employeeName)}
@@ -5528,6 +5833,7 @@
       state.offlineQueue = [];
       state.lockedDays = {};
       state.dayModAlerts = {};
+      state.dayStatuses = {};
       ensureDefaultLockedDays();
       state.simulateOffline = false;
       state.isWaitingServerAck = false;
@@ -5618,6 +5924,26 @@
     document.getElementById('btnDateToday')?.addEventListener('click', () => jumpDate(0));
     document.getElementById('btnDateYesterday')?.addEventListener('click', () => jumpDate(-1));
 
+    // Mục 2: Nghỉ sáng / chiều / cả ngày (P) và số giờ về sớm
+    document.querySelectorAll('#leavePills .leave-pill').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const el = document.getElementById('mobileLeave');
+        if (el) el.value = btn.getAttribute('data-leave') || '';
+        renderWorkerMobileView();
+      });
+    });
+    document.querySelectorAll('#earlyRow [data-early]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const v = btn.getAttribute('data-early') || '0';
+        const input = document.getElementById('mobileEarlyHours');
+        state.earlyOtherOpen = v === 'other';
+        if (input && v !== 'other') input.value = v;
+        renderWorkerMobileView();
+        if (v === 'other') input?.focus();
+      });
+    });
+    document.getElementById('mobileEarlyHours')?.addEventListener('input', renderWorkerMobileView);
+
     // Chọn nhanh 1 chạm Tổ hợp ca trong ngày (Ví dụ: Làm 6h15 - 17h15 -> X+2)
     document.querySelectorAll('#mobileComboPresetsGrid .time-preset-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -5637,9 +5963,8 @@
           ? state.loggedInEmployeeName
           : state.selectedEmployeeName;
       const vnDate = isoDateToVnDate(isoDate);
-      const hasExisting = state.records.some(
-        (r) => r.employeeName === activeWorkerName && r.workDate === vnDate
-      );
+      const existingDay = getEmployeeDaySummary(activeWorkerName, vnDate);
+      const hasExisting = existingDay.records.length > 0 || existingDay.hasStatus;
       if (hasExisting) {
         loadExistingDayIntoMobileForm(activeWorkerName, isoDate, false);
       } else {
@@ -5882,6 +6207,7 @@
           records: state.records,
           lockedDays: state.lockedDays,
           dayModAlerts: state.dayModAlerts,
+          dayStatuses: state.dayStatuses,
           holidays: state.holidays,
           exportedAt: getAuthoritativeServerDate().toISOString()
         },
@@ -5924,6 +6250,7 @@
             state.records = parsed.records;
             if (parsed.lockedDays) state.lockedDays = parsed.lockedDays;
             if (parsed.dayModAlerts) state.dayModAlerts = parsed.dayModAlerts;
+            if (parsed.dayStatuses) state.dayStatuses = parsed.dayStatuses;
             if (parsed.holidays) state.holidays = parsed.holidays;
             saveLocalState(true);
             syncWithCentralServer(true);
@@ -5968,6 +6295,23 @@
         const combo = btn.getAttribute('data-quick-cell-combo');
         if (combo) applyAdminQuickCellCombo(state.quickCellEmp, state.quickCellDate, combo);
       });
+    });
+    // Nghỉ (P) / về sớm của ô đang xem
+    document.querySelectorAll('[data-quick-leave]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyAdminQuickDayStatus(state.quickCellEmp, state.quickCellDate, { leave: btn.getAttribute('data-quick-leave') || '' });
+      });
+    });
+    document.querySelectorAll('[data-quick-early]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyAdminQuickDayStatus(state.quickCellEmp, state.quickCellDate, {
+          earlyHours: Number(btn.getAttribute('data-quick-early') || 0)
+        });
+      });
+    });
+    document.getElementById('matrixQuickEarlyInput')?.addEventListener('change', (e) => {
+      if (e.target.value === '') return;
+      applyAdminQuickDayStatus(state.quickCellEmp, state.quickCellDate, { earlyHours: Number(e.target.value) });
     });
     document.getElementById('btnMatrixQuickAddShift')?.addEventListener('click', () => {
       openAdminEditOvertimeModal(null, state.quickCellEmp, state.quickCellDate);
@@ -6070,6 +6414,7 @@
     lastSig: '',
     lastPulseSig: '',
     pendingCount: 0,
+    supportsDayStatus: false, // máy chủ đã có bảng Nghỉ / Về sớm (đã chạy supabase_setup.sql bản mới)
     timer: null,
     bound: false
   };
@@ -6139,6 +6484,7 @@
     state.offlineQueue = [];
     state.lockedDays = {};
     state.dayModAlerts = {};
+    state.dayStatuses = {};
     state.holidays = {};
     remote.snapshot = null;
     remote.lastSig = '';
@@ -6213,7 +6559,9 @@
     }
 
     remote.lastPulseSig = d.sig || '';
-    const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts]);
+    // Máy chủ chưa chạy lại supabase_setup.sql bản mới thì chưa có Nghỉ / Về sớm: không cho lưu để khỏi mất dữ liệu
+    remote.supportsDayStatus = Object.prototype.hasOwnProperty.call(d, 'dayStatuses');
+    const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts, d.dayStatuses]);
     if (!opts.force && remote.snapshot && sig === remote.lastSig) {
       return { ok: true, changed: false, data: d };
     }
@@ -6226,6 +6574,7 @@
       if (state.lockedDays[k] && typeof state.lockedDays[k] === 'object') state.lockedDays[k].locked = true;
     });
     state.dayModAlerts = d.dayModAlerts || {};
+    state.dayStatuses = d.dayStatuses || {};
     state.offlineQueue = [];
     remote.snapshot = window.OTRemote.snapshotFromState(state, state.authRole);
     return { ok: true, changed: true, data: d };
@@ -6641,6 +6990,7 @@
       records: d.records || [],
       lockedDays: d.lockedDays || {},
       dayModAlerts: d.dayModAlerts || {},
+      dayStatuses: d.dayStatuses || {},
       holidays: d.holidays || {},
       range: d.window,
       exportedAt: d.serverTime,
@@ -6699,6 +7049,12 @@
         if (!state.holidays[k]) state.holidays[k] = parsed.holidays[k];
       });
     }
+    if (remote.supportsDayStatus && parsed.dayStatuses && typeof parsed.dayStatuses === 'object') {
+      Object.keys(parsed.dayStatuses).forEach((k) => {
+        const name = k.split('::')[1];
+        if (have.has(name) && !state.dayStatuses[k]) state.dayStatuses[k] = parsed.dayStatuses[k];
+      });
+    }
     return { addedEmp, addedRec, skipped };
   }
 
@@ -6716,6 +7072,7 @@
             state.offlineQueue = ev.data.payload.offlineQueue || state.offlineQueue;
             if (ev.data.payload.lockedDays) state.lockedDays = ev.data.payload.lockedDays;
             if (ev.data.payload.dayModAlerts) state.dayModAlerts = ev.data.payload.dayModAlerts;
+            if (ev.data.payload.dayStatuses) state.dayStatuses = ev.data.payload.dayStatuses;
             if (ev.data.payload.holidays) state.holidays = ev.data.payload.holidays;
             renderAll();
           }

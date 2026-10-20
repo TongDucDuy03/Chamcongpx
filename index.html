@@ -207,10 +207,41 @@
               </div>
             </div>
 
-            <!-- 2. CHỌN NHANH 1 CHẠM THEO KHUNG GIỜ LÀM TRONG NGÀY -->
-            <div class="form-section normal-day-only">
+            <!-- 2. ĐI LÀM TRONG NGÀY: NGHỈ (P) / VỀ SỚM — ghi vào bảng công, không đụng giờ tăng ca -->
+            <div id="dayStatusSection" class="form-section normal-day-only">
               <div class="section-label-row">
-                <span class="section-label">2. Chọn nhanh ca làm việc trong ngày</span>
+                <span class="section-label">2. Đi làm trong ngày</span>
+                <span id="dayStatusSummary" class="sub-meta-text">Đi làm đủ</span>
+              </div>
+              <div id="leavePills" class="leave-pills">
+                <button type="button" class="leave-pill active" data-leave="">Đủ ngày</button>
+                <button type="button" class="leave-pill" data-leave="MORNING">Nghỉ sáng</button>
+                <button type="button" class="leave-pill" data-leave="AFTERNOON">Nghỉ chiều</button>
+                <button type="button" class="leave-pill" data-leave="FULL">Nghỉ cả ngày (P)</button>
+              </div>
+              <input type="hidden" id="mobileLeave" value="" />
+              <div id="earlyRow" class="early-row">
+                <span class="early-label">Về sớm:</span>
+                <div class="slot-quick-pills">
+                  <button type="button" class="slot-mini-btn active" data-early="0">Không</button>
+                  <button type="button" class="slot-mini-btn" data-early="0.5">0.5h</button>
+                  <button type="button" class="slot-mini-btn" data-early="1">1h</button>
+                  <button type="button" class="slot-mini-btn" data-early="1.5">1.5h</button>
+                  <button type="button" class="slot-mini-btn" data-early="2">2h</button>
+                  <button type="button" class="slot-mini-btn" data-early="other">Khác…</button>
+                </div>
+                <div id="earlyOtherWrap" class="early-other" style="display: none;">
+                  <input type="number" id="mobileEarlyHours" class="form-control" min="0" max="8" step="0.25" inputmode="decimal" value="0" />
+                  <span>giờ</span>
+                </div>
+                <div class="sub-meta-text">Đi muộn cũng ghi vào đây (VD: đi muộn 30 phút chọn 0.5h).</div>
+              </div>
+            </div>
+
+            <!-- 3. CHỌN NHANH 1 CHẠM THEO KHUNG GIỜ LÀM TRONG NGÀY -->
+            <div class="form-section normal-day-only ot-only">
+              <div class="section-label-row">
+                <span class="section-label">3. Chọn nhanh ca tăng ca trong ngày</span>
               </div>
               <div id="mobileComboPresetsGrid" class="time-presets-grid">
                 <button type="button" class="time-preset-btn" data-combo="MORN1_LUNCH1">
@@ -248,10 +279,10 @@
               </div>
             </div>
 
-            <!-- 3. TÍCH CHỌN / CHỈNH GIỜ TỪNG BUỔI (SÁNG • TRƯA • TỐI) -->
-            <details id="slotDetails" class="form-section normal-day-only slot-details" open>
+            <!-- 4. TÍCH CHỌN / CHỈNH GIỜ TỪNG BUỔI (SÁNG • TRƯA • TỐI) -->
+            <details id="slotDetails" class="form-section normal-day-only ot-only slot-details" open>
               <summary class="section-label-row">
-                <span class="section-label">3. Tích chọn / chỉnh giờ từng buổi</span>
+                <span class="section-label">4. Tích chọn / chỉnh giờ từng buổi</span>
                 <span id="mobileEstHoursBadge" class="sub-meta-text">X (0 giờ)</span>
               </summary>
 
@@ -374,11 +405,11 @@
               </div>
             </div>
 
-            <!-- 4. NỘI DUNG CÔNG VIỆC & GHI CHÚ -->
-            <div class="form-section">
+            <!-- 5. NỘI DUNG CÔNG VIỆC & GHI CHÚ -->
+            <div class="form-section ot-only">
               <div class="section-label-row">
                 <label class="section-label" for="mobileJobContent" style="margin-bottom: 0;">
-                  4. Nội dung công việc <span style="color: var(--rose);">*</span>
+                  5. Nội dung công việc <span style="color: var(--rose);">*</span>
                 </label>
                 <span id="mobileOvertimeTypeTag" class="sub-meta-text">Ngoài khoán</span>
               </div>
@@ -403,7 +434,7 @@
               </div>
             </div>
 
-            <div class="form-section" style="margin-bottom: 0.85rem;">
+            <div class="form-section ot-only" style="margin-bottom: 0.85rem;">
               <label class="form-label" for="mobileNoteInput">Ghi chú (nếu có)</label>
               <input
                 type="text"
@@ -430,7 +461,7 @@
               </button>
             </div>
             <button type="button" id="btnDeleteDayFromForm" class="btn-danger-outline" style="display: none;">
-              Xóa báo tăng ca ngày này
+              Xóa báo ngày này (tăng ca, nghỉ, về sớm)
             </button>
 
           </div>
@@ -451,16 +482,19 @@
               <div><strong id="calSumHours">0</strong><span>tổng giờ tăng ca</span></div>
               <div><strong id="calSumWorkDays">0</strong><span>ngày công (X)</span></div>
             </div>
+            <div id="calSumLeaveLine" class="cal-sum-leave" style="display: none;"></div>
             <div class="cal-weekdays">
               <span>T2</span><span>T3</span><span>T4</span><span>T5</span><span>T6</span><span>T7</span><span>CN</span>
             </div>
             <div id="calGrid" class="cal-grid"></div>
             <div class="cal-legend">
               <span><i class="cal-dot ot"></i>Có tăng ca</span>
+              <span><i class="cal-dot leave"></i>Nghỉ / về sớm</span>
+              <span><i class="cal-dot sunday"></i>Chủ nhật / lễ</span>
               <span><i class="cal-dot locked"></i>Đã chốt công</span>
               <span><i class="cal-dot warn"></i>Sửa sau chốt</span>
             </div>
-            <div class="sub-meta-text" style="margin-top: 0.5rem;">X = 1 công làm giờ hành chính. X+4 = 1 công + 4 giờ tăng ca. Bấm vào một ngày để xem hoặc sửa.</div>
+            <div class="sub-meta-text" style="margin-top: 0.5rem;">X = 1 công làm giờ hành chính. X+4 = 1 công + 4 giờ tăng ca. X/2 = nghỉ nửa ngày, P = nghỉ cả ngày, X+1-1 = tăng ca 1 giờ và về sớm 1 giờ. Bấm vào một ngày để xem hoặc sửa.</div>
             <div id="calDayDetail" class="cal-day-detail" style="display: none;"></div>
             <div class="cal-list-title">Chi tiết cả tháng</div>
             <div id="calList" class="cal-list"></div>
@@ -723,7 +757,8 @@
             </div>
 
             <div class="matrix-legend-bar">
-              <span><strong>Chú thích:</strong> <code>X+4</code> = 1 công hành chính + 4 giờ tăng ca (Sáng 1h + Trưa 2h + Tối 1h). <strong>Mẹo:</strong> Bấm vào bất kỳ ô nào để xem hoặc chỉnh nhanh ca ngày đó.</span>
+              <span><strong>Chú thích:</strong> <code>X+4</code> = 1 công hành chính + 4 giờ tăng ca. <code>X/2</code> = nghỉ nửa ngày, <code>P</code> = nghỉ cả ngày, <code>X+1-1</code> = tăng ca 1 giờ, về sớm 1 giờ (về sớm ghi riêng, không trừ giờ tăng ca). <strong>Mẹo:</strong> Bấm vào bất kỳ ô nào để xem hoặc chỉnh nhanh ngày đó.</span>
+              <span><span class="legend-swatch rest-day"></span> Chủ nhật / ngày lễ</span>
               <span><span class="legend-swatch locked"></span> Ngày Quản đốc đã chốt công</span>
               <span><span class="legend-swatch yellow-warn"></span> Ô bôi vàng: có sửa sau khi Quản đốc đã chốt (ghi rõ trước → sau, bấm "Duyệt" để chấp nhận)</span>
             </div>
@@ -959,6 +994,26 @@
 
         <div id="matrixQuickChangeBox" class="matrix-quick-change-box" style="display: none;">
           <!-- Trước/sau của ô vàng: render động từ app.js -->
+        </div>
+
+        <div id="matrixQuickStatusBox" class="matrix-quick-status-box">
+          <div class="matrix-quick-status-row">
+            <span class="matrix-quick-status-label">Đi làm:</span>
+            <button type="button" class="slot-mini-btn" data-quick-leave="">Đủ ngày</button>
+            <button type="button" class="slot-mini-btn" data-quick-leave="MORNING">Nghỉ sáng</button>
+            <button type="button" class="slot-mini-btn" data-quick-leave="AFTERNOON">Nghỉ chiều</button>
+            <button type="button" class="slot-mini-btn" data-quick-leave="FULL">Nghỉ cả ngày (P)</button>
+          </div>
+          <div class="matrix-quick-status-row">
+            <span class="matrix-quick-status-label">Về sớm:</span>
+            <button type="button" class="slot-mini-btn" data-quick-early="0">Không</button>
+            <button type="button" class="slot-mini-btn" data-quick-early="0.5">0.5h</button>
+            <button type="button" class="slot-mini-btn" data-quick-early="1">1h</button>
+            <button type="button" class="slot-mini-btn" data-quick-early="1.5">1.5h</button>
+            <button type="button" class="slot-mini-btn" data-quick-early="2">2h</button>
+            <input type="number" id="matrixQuickEarlyInput" class="form-control matrix-quick-early-input" min="0" max="8" step="0.25" inputmode="decimal" title="Số giờ về sớm khác (bấm Enter để lưu)" />
+            <span class="sub-meta-text">giờ</span>
+          </div>
         </div>
 
         <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.4rem;">

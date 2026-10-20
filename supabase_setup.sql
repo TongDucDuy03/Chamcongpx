@@ -103,6 +103,17 @@ create table if not exists ot.mod_alerts (
   updated_at timestamptz not null default now()
 );
 
+-- Nghỉ (P) / về sớm theo ngày: mỗi người mỗi ngày tối đa 1 dòng, tách riêng khỏi ca tăng ca
+create table if not exists ot.day_status (
+  employee_id bigint not null references ot.employees (id) on delete restrict,
+  work_date date not null,
+  leave text not null default '' check (leave in ('', 'MORNING', 'AFTERNOON', 'FULL')),
+  early_hours numeric(4, 2) not null default 0 check (early_hours >= 0 and early_hours <= 8),
+  updated_at timestamptz not null default now(),
+  primary key (employee_id, work_date)
+);
+create index if not exists day_status_date_idx on ot.day_status (work_date);
+
 -- Số phiên bản thay đổi dữ liệu: để máy khách hỏi nhanh "có gì mới không" thay vì tải lại toàn bộ (tiết kiệm lưu lượng)
 create table if not exists ot.meta (
   id int primary key default 1 check (id = 1),
@@ -118,6 +129,7 @@ alter table ot.records enable row level security;
 alter table ot.holidays enable row level security;
 alter table ot.locked_days enable row level security;
 alter table ot.mod_alerts enable row level security;
+alter table ot.day_status enable row level security;
 
 revoke all on schema ot from public, anon, authenticated;
 revoke all on all tables in schema ot from public, anon, authenticated;
@@ -349,6 +361,7 @@ declare
   v_holidays jsonb;
   v_locked jsonb;
   v_alerts jsonb;
+  v_statuses jsonb;
   v_sig text;
 begin
   v := ot.require_session(p_token);
@@ -373,6 +386,7 @@ begin
            'endDate', e.end_date,
            'mustChangePassword', e.must_change_password,
            'hasRecords', exists (select 1 from ot.records r where r.employee_id = e.id)
+                         or exists (select 1 from ot.day_status s where s.employee_id = e.id)
          ) order by e.name), '[]'::jsonb)
     into v_employees
     from ot.employees e
@@ -402,6 +416,13 @@ begin
     from ot.mod_alerts a
    where v.role = 'admin' or a.employee_id = v.id;
 
+  select coalesce(jsonb_object_agg(to_char(s.work_date, 'DD/MM/YYYY') || '::' || e.name,
+           jsonb_build_object('leave', s.leave, 'earlyHours', s.early_hours)), '{}'::jsonb)
+    into v_statuses
+    from ot.day_status s join ot.employees e on e.id = s.employee_id
+   where s.work_date between d_from and d_to
+     and (v.role = 'admin' or s.employee_id = v.id);
+
   return jsonb_build_object(
     'ok', true,
     'role', v.role,
@@ -416,7 +437,8 @@ begin
     'records', v_records,
     'holidays', v_holidays,
     'lockedDays', v_locked,
-    'dayModAlerts', v_alerts
+    'dayModAlerts', v_alerts,
+    'dayStatuses', v_statuses
   );
 end $$;
 
@@ -468,6 +490,8 @@ declare
   v_bump bigint[] := '{}';
   v_bump_all boolean := false;
   v_eid bigint;
+  v_leave text;
+  v_early numeric;
 begin
   v := ot.require_session(p_token);
   is_admin := (v.role = 'admin');
@@ -478,7 +502,7 @@ begin
 
   if not is_admin then
     for k in select jsonb_object_keys(p_ops) loop
-      if k not in ('recordsUpsert', 'recordsDelete', 'alertsUpsert') then
+      if k not in ('recordsUpsert', 'recordsDelete', 'alertsUpsert', 'statusUpsert', 'statusDelete') then
         perform ot.fail('forbidden', 'Bạn không có quyền thực hiện thao tác này.');
       end if;
     end loop;
@@ -486,7 +510,9 @@ begin
 
   v_limit := case when is_admin then 1000 else 40 end;
   if jsonb_array_length(ot.arr(p_ops, 'recordsUpsert')) > v_limit
-     or jsonb_array_length(ot.arr(p_ops, 'recordsDelete')) > v_limit then
+     or jsonb_array_length(ot.arr(p_ops, 'recordsDelete')) > v_limit
+     or jsonb_array_length(ot.arr(p_ops, 'statusUpsert')) > v_limit
+     or jsonb_array_length(ot.arr(p_ops, 'statusDelete')) > v_limit then
     perform ot.fail('too_many', 'Gửi quá nhiều dòng cùng lúc.');
   end if;
 
@@ -700,11 +726,73 @@ begin
     end if;
   end if;
 
-  -- ===== Xóa nhân viên (chỉ khi chưa có dữ liệu tăng ca) =====
+  -- ===== Nghỉ (P) / về sớm theo ngày (khóa 'dd/mm/yyyy::Tên') =====
+  for item in select jsonb_array_elements(ot.arr(p_ops, 'statusUpsert')) loop
+    v_key := btrim(coalesce(item ->> 'key', ''));
+    if position('::' in v_key) = 0 then
+      perform ot.fail('bad_request', 'Mã ngày nghỉ / về sớm không hợp lệ.');
+    end if;
+    v_wd := ot.parse_vn_date(split_part(v_key, '::', 1));
+    v_name := substr(v_key, position('::' in v_key) + 2);
+    select * into emp from ot.employees where name = v_name and role = 'worker';
+    if not found then
+      perform ot.fail('bad_employee', 'Không tìm thấy nhân viên: ' || v_name);
+    end if;
+    if not is_admin and emp.id <> v.id then
+      perform ot.fail('forbidden', 'Bạn chỉ được báo nghỉ / về sớm cho chính mình.');
+    end if;
+    if (emp.start_date is not null and v_wd < emp.start_date) or (emp.end_date is not null and v_wd > emp.end_date) then
+      perform ot.fail('not_employed', 'Nhân viên chưa vào làm hoặc đã nghỉ việc vào ngày ' || to_char(v_wd, 'DD/MM/YYYY') || '.');
+    end if;
+    if not is_admin and v_wd > today then
+      perform ot.fail('future_date', 'Chưa tới ngày ' || to_char(v_wd, 'DD/MM/YYYY') || ' nên chưa báo được.');
+    end if;
+    v_leave := coalesce(item ->> 'leave', '');
+    if v_leave not in ('', 'MORNING', 'AFTERNOON', 'FULL') then
+      perform ot.fail('bad_request', 'Loại nghỉ không hợp lệ.');
+    end if;
+    begin
+      v_early := round(coalesce(nullif(btrim(coalesce(item ->> 'earlyHours', '')), ''), '0')::numeric, 2);
+    exception when invalid_text_representation then
+      perform ot.fail('bad_request', 'Số giờ về sớm không hợp lệ.');
+    end;
+    if v_early < 0 or v_early > 8 then
+      perform ot.fail('bad_request', 'Số giờ về sớm phải từ 0 đến 8.');
+    end if;
+    if v_leave = 'FULL' then
+      v_early := 0;
+    end if;
+    if v_leave = '' and v_early = 0 then
+      delete from ot.day_status where employee_id = emp.id and work_date = v_wd;
+    else
+      insert into ot.day_status (employee_id, work_date, leave, early_hours) values (emp.id, v_wd, v_leave, v_early)
+      on conflict (employee_id, work_date) do update
+        set leave = excluded.leave, early_hours = excluded.early_hours, updated_at = now();
+    end if;
+    v_bump := v_bump || emp.id;
+  end loop;
+  for v_key in select jsonb_array_elements_text(ot.arr(p_ops, 'statusDelete')) loop
+    if position('::' in v_key) = 0 then
+      perform ot.fail('bad_request', 'Mã ngày nghỉ / về sớm không hợp lệ.');
+    end if;
+    v_wd := ot.parse_vn_date(split_part(v_key, '::', 1));
+    v_name := substr(v_key, position('::' in v_key) + 2);
+    select * into emp from ot.employees where name = v_name and role = 'worker';
+    if found then
+      if not is_admin and emp.id <> v.id then
+        perform ot.fail('forbidden', 'Bạn chỉ được sửa nghỉ / về sớm của chính mình.');
+      end if;
+      delete from ot.day_status where employee_id = emp.id and work_date = v_wd;
+      v_bump := v_bump || emp.id;
+    end if;
+  end loop;
+
+  -- ===== Xóa nhân viên (chỉ khi chưa có dữ liệu tăng ca / nghỉ) =====
   for v_name in select jsonb_array_elements_text(ot.arr(p_ops, 'employeesDelete')) loop
     select * into emp from ot.employees where name = v_name and role = 'worker';
     if found then
-      if exists (select 1 from ot.records where employee_id = emp.id) then
+      if exists (select 1 from ot.records where employee_id = emp.id)
+         or exists (select 1 from ot.day_status where employee_id = emp.id) then
         perform ot.fail('has_records', 'Nhân viên "' || v_name || '" đã có dữ liệu tăng ca nên không xóa được. Hãy dùng "Cho nghỉ việc".');
       end if;
       delete from ot.employees where id = emp.id;

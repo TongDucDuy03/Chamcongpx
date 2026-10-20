@@ -2287,3 +2287,72 @@ tr.data-row.modified-after-lock td {
   padding: 0;
   font-weight: 700;
 }
+
+/* ==========================================================================
+   NGHỈ (P) / VỀ SỚM (mục 2 form công nhân, bảng công, hộp xem nhanh ô)
+   ========================================================================== */
+.leave-pills { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.4rem; }
+.leave-pill {
+  min-height: 44px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+.leave-pill.active { background: #ede9fe; border-color: #8b5cf6; color: #5b21b6; }
+.leave-pill[data-leave=""].active { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+.early-row { margin-top: 0.65rem; }
+.early-label { display: block; font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.3rem; }
+.early-other { align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+.early-other input { max-width: 110px; }
+.shift-slot-card.blocked { opacity: 0.5; }
+.time-preset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.history-status-tag { background: #ede9fe; color: #5b21b6; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.7rem; font-weight: 700; }
+
+.cal-cell.leave { background: #f5f3ff; border-color: #c4b5fd; }
+.cal-cell.leave .cal-code { color: #6d28d9; }
+.cal-list-row.leave .cal-list-code { color: #6d28d9; }
+.cal-dot.leave { background: #f5f3ff; border: 1px solid #c4b5fd; }
+.cal-sum-leave {
+  margin: -0.3rem 0 0.7rem;
+  padding: 0.4rem 0.6rem;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius-md);
+  color: #5b21b6;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.matrix-cell.has-leave .matrix-code-pill { background: #ede9fe; color: #5b21b6; }
+.matrix-summary-col.leave-sum { color: #5b21b6; }
+.matrix-quick-status-box {
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.8rem;
+  margin: 0.75rem 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.matrix-quick-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
+.matrix-quick-status-label { font-size: 0.8rem; font-weight: 700; color: #5b21b6; min-width: 58px; }
+.matrix-quick-status-box .slot-mini-btn.active { background: #ede9fe; border-color: #8b5cf6; color: #5b21b6; }
+.matrix-quick-early-input { width: 80px; min-height: 34px; padding: 0.2rem 0.4rem; }
+
+/* Ngày Chủ nhật / ngày lễ: nền hồng nhạt để tách khỏi ngày thường (bảng công, Chi tiết ca, lịch công nhân) */
+.matrix-day-th.rest-day-col { background: #ffe4e6; }
+.matrix-cell.rest-col,
+.matrix-cell.rest-day-col { background: #fff1f2; }
+tr.data-row.rest-day-row td { background: #fff1f2; }
+.cal-cell.sunday,
+.cal-cell.holiday { background: #fff1f2; }
+.cal-list-row.rest { background: #fff1f2; }
+.cal-dot.sunday { background: #fff1f2; border: 1px solid #fecdd3; }
+.legend-swatch.rest-day { background: #fff1f2; border: 1px solid #fecdd3; }
+/* Ô sửa sau chốt luôn nổi bật nhất */
+.cal-cell.warn { background: #fef08a; border-color: #ca8a04; }

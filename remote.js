@@ -107,11 +107,20 @@
     };
   }
 
+  /** Nghỉ (P) / về sớm của 1 người 1 ngày, khóa `dd/mm/yyyy::Tên` */
+  function canonStatus(s) {
+    const n = Number((s && s.earlyHours) || 0);
+    return { leave: str(s && s.leave), earlyHours: isNaN(n) ? 0 : Math.round(n * 100) / 100 };
+  }
+
   /** Chụp lại trạng thái hiện tại thành các chuỗi để so sánh nhanh. */
   function snapshotFromState(st, role) {
-    const snap = { records: {}, employees: {}, holidays: {}, locked: {}, alerts: {} };
+    const snap = { records: {}, employees: {}, holidays: {}, locked: {}, alerts: {}, statuses: {} };
     (st.records || []).forEach((r) => {
       snap.records[r.id] = JSON.stringify(canonRecord(r));
+    });
+    Object.keys(st.dayStatuses || {}).forEach((k) => {
+      snap.statuses[k] = JSON.stringify(canonStatus(st.dayStatuses[k]));
     });
     if (role === 'ADMIN') {
       (st.employees || []).forEach((e) => {
@@ -156,6 +165,14 @@
     });
     Object.keys(prev.records).forEach((id) => {
       if (!(id in cur.records)) add('recordsDelete', id);
+    });
+
+    const prevStatuses = prev.statuses || {};
+    Object.keys(cur.statuses).forEach((k) => {
+      if (prevStatuses[k] !== cur.statuses[k]) add('statusUpsert', Object.assign({ key: k }, canonStatus(st.dayStatuses[k])));
+    });
+    Object.keys(prevStatuses).forEach((k) => {
+      if (!(k in cur.statuses)) add('statusDelete', k);
     });
 
     Object.keys(cur.alerts).forEach((k) => {
@@ -216,7 +233,7 @@
     return chunks;
   }
 
-  const api = { createClient, isRetryable, canonRecord, canonEmployee, snapshotFromState, computeOps, chunkOps };
+  const api = { createClient, isRetryable, canonRecord, canonEmployee, canonStatus, snapshotFromState, computeOps, chunkOps };
   root.OTRemote = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

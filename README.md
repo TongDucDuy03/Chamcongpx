@@ -8,6 +8,7 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 
 **Công nhân** — mở link quản đốc gửi qua Zalo, đăng nhập bằng tên đăng nhập + mật khẩu quản đốc cấp (lần đầu đăng nhập sẽ được nhắc đổi mật khẩu).
 - *Báo tăng ca*: chọn ngày (Hôm nay / Hôm qua), chọn mẫu ca, chọn nội dung việc, bấm Lưu.
+- *Nghỉ / về sớm* (mục 2 của form, báo cùng lúc với tăng ca): Nghỉ sáng / Nghỉ chiều → `X/2`, Nghỉ cả ngày → `P`, về sớm (hoặc đi muộn) 1 giờ → `-1`. Ví dụ nghỉ sáng, tối tăng ca 1 giờ là `X/2+1`; sáng tăng ca 1 giờ, chiều về sớm 1 giờ là `X+1-1`. Về sớm ghi riêng, không trừ vào giờ tăng ca, và không đưa vào file Excel tăng ca.
 - *Bảng công*: xem cả tháng, mỗi ngày là `X`, `X+1`, `X+4`... và tổng giờ tăng ca. Bấm vào một ngày để xem hoặc sửa.
 - Chủ nhật và ngày lễ: chỉ báo nếu có đi làm, ghi đúng số giờ (đủ ngày là 8 giờ).
 - Mất mạng thì dữ liệu được giữ trên điện thoại và tự gửi khi có mạng.
@@ -31,7 +32,7 @@ Khi chưa cài đặt, ứng dụng chạy chế độ thử: dữ liệu chỉ 
 
 ## Bot Telegram nhắc Quản đốc (tùy chọn) — làm 1 lần
 
-Mỗi ngày lúc 14:00, bot gửi vào Telegram danh sách công nhân đang làm việc mà **ngày hôm trước chưa có ca tăng ca nào**, để Quản đốc đi nhắc. Người hôm đó không tăng ca thật cũng có tên, Quản đốc tự bỏ qua. Hôm trước là Chủ nhật hoặc ngày lễ (trong *Lịch nghỉ lễ*) thì bot không nhắc. Bot chạy ngay trong Supabase, không cần máy nào bật.
+Mỗi ngày lúc 14:00, bot gửi vào Telegram danh sách công nhân đang làm việc mà **ngày hôm trước chưa báo gì** (không có ca tăng ca, không báo nghỉ / về sớm), để Quản đốc đi nhắc. Người hôm đó không tăng ca thật cũng có tên, Quản đốc tự bỏ qua. Hôm trước là Chủ nhật hoặc ngày lễ (trong *Lịch nghỉ lễ*) thì bot không nhắc. Bot chạy ngay trong Supabase, không cần máy nào bật.
 
 1. **Tạo bot**: trong Telegram tìm **@BotFather** → gửi `/newbot` → đặt tên → BotFather gửi lại **TOKEN** dạng `123456789:AAH...`. Giữ bí mật token này, không dán vào `config.js` hay gửi cho ai.
 2. **Chọn nơi nhận tin**:

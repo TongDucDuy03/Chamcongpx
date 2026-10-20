@@ -12,7 +12,7 @@
 --   Đổi giờ nhắc:  select ot.telegram_set_time('15:30');
 --   Tắt nhắc:      select ot.telegram_off();
 --
--- Bot nhắc gì: công nhân đang làm việc mà ngày hôm trước KHÔNG có ca tăng ca nào.
+-- Bot nhắc gì: công nhân đang làm việc mà ngày hôm trước chưa báo gì (không có ca tăng ca, không báo nghỉ / về sớm).
 -- Người hôm đó không tăng ca thật cũng có tên trong danh sách, Quản đốc tự bỏ qua.
 -- Hôm trước là Chủ nhật hoặc ngày lễ (trong Lịch nghỉ lễ của app) thì bot không nhắc.
 -- =====================================================================
@@ -77,6 +77,7 @@ begin
   select count(*),
          coalesce(array_agg(e.name order by e.name) filter (
            where not exists (select 1 from ot.records r where r.employee_id = e.id and r.work_date = p_date)
+             and not exists (select 1 from ot.day_status s where s.employee_id = e.id and s.work_date = p_date)
          ), '{}')
     into v_total, v_missing
     from ot.employees e
@@ -88,7 +89,7 @@ begin
     return null;
   end if;
   if cardinality(v_missing) = 0 then
-    return format('✅ %s: cả %s công nhân đều đã báo tăng ca.', v_day, v_total);
+    return format('✅ %s: cả %s công nhân đều đã báo (tăng ca / nghỉ / về sớm).', v_day, v_total);
   end if;
 
   -- Telegram giới hạn 4096 ký tự/tin: danh sách quá dài thì ghi "... và N người nữa"
@@ -102,7 +103,7 @@ begin
   end loop;
 
   return format(
-    E'⏰ Nhắc chấm công tăng ca – %s\nCó %s/%s công nhân chưa báo ca tăng ca nào:%s\n\nAi hôm đó không tăng ca thì bỏ qua tên người đó.',
+    E'⏰ Nhắc chấm công tăng ca – %s\nCó %s/%s công nhân chưa báo gì (tăng ca / nghỉ / về sớm):%s\n\nAi hôm đó đi làm bình thường, không tăng ca thì bỏ qua tên người đó.',
     v_day, cardinality(v_missing), v_total, v_list
   );
 end $$;
