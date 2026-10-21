@@ -438,7 +438,8 @@ begin
     'holidays', v_holidays,
     'lockedDays', v_locked,
     'dayModAlerts', v_alerts,
-    'dayStatuses', v_statuses
+    'dayStatuses', v_statuses,
+    'supportsRestHours', true
   );
 end $$;
 
@@ -472,6 +473,7 @@ declare
   v_end timestamp;
   v_date date;
   v_override numeric;
+  v_is_rest boolean;
   v_type text;
   v_mode text;
   v_note text;
@@ -644,6 +646,7 @@ begin
       perform ot.fail('future_date', 'Chưa tới ngày ' || to_char(v_date, 'DD/MM/YYYY') || ' nên chưa báo được.');
     end if;
 
+    v_is_rest := extract(dow from v_date) = 0 or exists (select 1 from ot.holidays h where h.work_date = v_date);
     v_override := null;
     if nullif(btrim(coalesce(item ->> 'overrideHours', '')), '') is not null then
       begin
@@ -653,6 +656,13 @@ begin
       end;
       if v_override < 0 or v_override > 24 then
         perform ot.fail('bad_record', 'Số giờ ghi đè phải từ 0 đến 24.');
+      end if;
+    end if;
+
+    if not is_admin and v_is_rest and v_override is not null then
+      if v_override <= 0 or v_override > extract(epoch from (v_end - v_start)) / 3600
+         or v_override <> round(v_override, 2) then
+        perform ot.fail('bad_record', 'Số giờ làm thực tế phải lớn hơn 0, không vượt khoảng giờ làm và có tối đa 2 chữ số thập phân.');
       end if;
     end if;
 
@@ -679,7 +689,7 @@ begin
            start_ts = v_start,
            end_ts = v_end,
            work_date = v_date,
-           override_hours = case when is_admin then v_override else override_hours end,
+           override_hours = case when is_admin or v_is_rest then v_override else override_hours end,
            overtime_type = v_type,
            work_mode = v_mode,
            note = v_note,
@@ -697,7 +707,7 @@ begin
       insert into ot.records (id, employee_id, job_content, start_time, end_time, start_ts, end_ts, work_date,
                               override_hours, overtime_type, work_mode, note, modified_after_lock, modified_at, receipt_id)
       values (v_id, rec_emp.id, v_job, btrim(item ->> 'startTime'), btrim(item ->> 'endTime'), v_start, v_end, v_date,
-              case when is_admin then v_override else null end, v_type, v_mode, v_note,
+              case when is_admin or v_is_rest then v_override else null end, v_type, v_mode, v_note,
               (item -> 'modifiedAfterLock') = 'true'::jsonb, left(coalesce(item ->> 'modifiedAt', ''), 40), v_receipt);
     end if;
 

@@ -2611,16 +2611,25 @@
       const rStartEl = document.getElementById('restStart');
       const rEndEl = document.getElementById('restEnd');
       const rStartHm = rStartEl && rStartEl.value ? rStartEl.value : '07:15';
-      const rEndHm = rEndEl && rEndEl.value ? rEndEl.value : '15:15';
+      const rEndHm = rEndEl && rEndEl.value ? rEndEl.value : '17:15';
       const rStartStr = `${workDateStr} ${rStartHm}`;
       const rEndStr = `${workDateStr} ${rEndHm}`;
       const rStartMs = parseVnDateTimeToMs(rStartStr);
       const rEndMs = parseVnDateTimeToMs(rEndStr);
-      const rHours =
+      const elapsedHours =
         rStartMs && rEndMs && rEndMs > rStartMs
           ? Math.round(((rEndMs - rStartMs) / 3600000) * 100) / 100
           : 0;
-      const restChecked = Boolean(rCheck && rCheck.checked) && rHours > 0;
+      const actualEl = document.getElementById('restActualHours');
+      const actualRaw = actualEl ? actualEl.value.trim() : '';
+      const overrideHours = actualRaw === '' ? null : Number(actualRaw);
+      const rHours = overrideHours === null ? elapsedHours : overrideHours;
+      const hoursError = elapsedHours <= 0
+        ? 'Giờ kết thúc phải sau giờ bắt đầu trong cùng ngày.'
+        : actualEl?.validity?.badInput || !Number.isFinite(rHours) || rHours <= 0 || rHours > elapsedHours || Math.abs(rHours * 100 - Math.round(rHours * 100)) > 0.000001
+          ? `Số giờ làm thực tế phải lớn hơn 0, không quá ${formatHoursClean(elapsedHours)} giờ và có tối đa 2 chữ số thập phân.`
+          : '';
+      const restChecked = Boolean(rCheck && rCheck.checked);
       const restSlot = {
         slotKey: 'REST',
         slotLabel: 'Làm ngày nghỉ',
@@ -2631,6 +2640,9 @@
         endTime: rEndStr,
         workDate: workDateStr,
         estHours: rHours,
+        overrideHours,
+        elapsedHours,
+        hoursError,
         workMode: 'Tăng ca tại công ty'
       };
       result.isRestDay = true;
@@ -2814,10 +2826,18 @@
         const re = document.getElementById('restEnd');
         if (rs && hmOf(sorted[0].startTime)) rs.value = hmOf(sorted[0].startTime);
         if (re && hmOf(sorted[sorted.length - 1].endTime)) re.value = hmOf(sorted[sorted.length - 1].endTime);
+        const actual = document.getElementById('restActualHours');
+        if (actual) actual.value = sorted[0].overrideHours == null ? '' : String(sorted[0].overrideHours);
         const jobInputR = document.getElementById('mobileJobContent');
         if (jobInputR && sorted[0].jobContent) jobInputR.value = sorted[0].jobContent;
       } else {
         restCheckEl.checked = false;
+        const actual = document.getElementById('restActualHours');
+        if (actual) actual.value = '8';
+        const rs = document.getElementById('restStart');
+        const re = document.getElementById('restEnd');
+        if (rs) rs.value = '07:15';
+        if (re) re.value = '17:15';
       }
     }
 
@@ -2998,7 +3018,14 @@
         const body = document.getElementById('restWorkBody');
         if (body) body.style.display = daily.restRawChecked ? 'block' : 'none';
         const hrsLbl = document.getElementById('restHoursLabel');
-        if (hrsLbl) hrsLbl.textContent = `Tổng: ${formatHoursClean(daily.restSlot.estHours)} giờ`;
+        const actual = document.getElementById('restActualHours');
+        if (actual) {
+          actual.placeholder = String(daily.restSlot.elapsedHours);
+          actual.max = String(daily.restSlot.elapsedHours || 24);
+          actual.setCustomValidity(daily.restSlot.hoursError);
+          actual.setAttribute('aria-invalid', String(Boolean(daily.restSlot.hoursError)));
+        }
+        if (hrsLbl) hrsLbl.textContent = daily.restSlot.hoursError || `Tổng: ${formatHoursClean(daily.restSlot.estHours)} giờ`;
       }
     }
 
@@ -3227,7 +3254,8 @@
     setVal('slotEveningStart', '17:15');
     setVal('slotEveningEnd', '18:15');
     setVal('restStart', '07:15');
-    setVal('restEnd', '15:15');
+    setVal('restEnd', '17:15');
+    setVal('restActualHours', '8');
     setVal('mobileLeave', '');
     setVal('mobileEarlyHours', '0');
     state.earlyOtherOpen = false;
@@ -3722,7 +3750,7 @@
     if (loaded.note !== undefined && candidate.note === loaded.note) out.note = old.note || '';
     if (same) {
       out.id = old.id;
-      out.overrideHours = old.overrideHours === undefined ? null : old.overrideHours;
+      if (slotKey !== 'REST') out.overrideHours = old.overrideHours === undefined ? null : old.overrideHours;
       if (old.createdAt) out.createdAt = old.createdAt;
     }
     return out;
@@ -3790,6 +3818,19 @@
       playFeedbackSound('ERROR');
       showToast('Máy chủ chưa bật tính năng Nghỉ / Về sớm. Nhờ Quản đốc chạy lại file supabase_setup.sql trong Supabase rồi báo lại.', 'error');
       return;
+    }
+
+    // Kiểm tra trước nhánh xóa ca: nhập giờ sai không được hiểu thành nghỉ cả ngày.
+    if (daily.isRestDay && daily.restRawChecked) {
+      if (daily.restSlot.hoursError) {
+        showToast(daily.restSlot.hoursError, 'error');
+        document.getElementById('restActualHours')?.focus();
+        return;
+      }
+      if (REMOTE_MODE && state.authRole === 'WORKER' && !remote.supportsRestHours) {
+        showToast('Máy chủ chưa hỗ trợ sửa giờ làm ngày nghỉ. Nhờ Quản đốc cập nhật supabase_setup.sql rồi tải lại trang.', 'error');
+        return;
+      }
     }
 
     // Không tích ca nào: lưu nghỉ / về sớm (nếu có) và bỏ hết tăng ca đã báo của ngày đó
@@ -3866,7 +3907,7 @@
         startTime: slot.startTime,
         endTime: slot.endTime,
         workDate: daily.workDate,
-        overrideHours: null,
+        overrideHours: slot.overrideHours ?? null,
         overtimeType: state.mobileOvertimeType,
         workMode: slot.workMode,
         note: noteText,
@@ -6105,21 +6146,32 @@
       });
     });
 
-    ['restWorkCheck', 'restStart', 'restEnd'].forEach((id) => {
+    ['restWorkCheck', 'restActualHours'].forEach((id) => {
       document.getElementById(id)?.addEventListener('change', renderWorkerMobileView);
       document.getElementById(id)?.addEventListener('input', renderWorkerMobileView);
     });
-    const setRestRange = (startHm, endHm) => {
+    ['restStart', 'restEnd'].forEach((id) => {
+      const onTimeChange = () => {
+        const actual = document.getElementById('restActualHours');
+        if (actual) actual.value = '';
+        renderWorkerMobileView();
+      };
+      document.getElementById(id)?.addEventListener('input', onTimeChange);
+      document.getElementById(id)?.addEventListener('change', onTimeChange);
+    });
+    const setRestRange = (startHm, endHm, hours) => {
       const rs = document.getElementById('restStart');
       const re = document.getElementById('restEnd');
       const rc = document.getElementById('restWorkCheck');
       if (rs) rs.value = startHm;
       if (re) re.value = endHm;
       if (rc) rc.checked = true;
+      const actual = document.getElementById('restActualHours');
+      if (actual) actual.value = String(hours);
       renderWorkerMobileView();
     };
-    document.getElementById('btnRestFull')?.addEventListener('click', () => setRestRange('07:15', '15:15'));
-    document.getElementById('btnRestHalf')?.addEventListener('click', () => setRestRange('07:15', '11:15'));
+    document.getElementById('btnRestFull')?.addEventListener('click', () => setRestRange('07:15', '17:15', 8));
+    document.getElementById('btnRestHalf')?.addEventListener('click', () => setRestRange('07:15', '11:15', 4));
 
     // Nút chọn nhanh giờ Trưa (2h: 11:15-13:15 hoặc 1h: 12:15-13:15)
     document.querySelectorAll('.slot-mini-btn[data-lunch-range]').forEach((btn) => {
@@ -6538,6 +6590,7 @@
     lastPulseSig: '',
     pendingCount: 0,
     supportsDayStatus: false, // máy chủ đã có bảng Nghỉ / Về sớm (đã chạy supabase_setup.sql bản mới)
+    supportsRestHours: false,
     timer: null,
     bound: false
   };
@@ -6684,6 +6737,7 @@
     remote.lastPulseSig = d.sig || '';
     // Máy chủ chưa chạy lại supabase_setup.sql bản mới thì chưa có Nghỉ / Về sớm: không cho lưu để khỏi mất dữ liệu
     remote.supportsDayStatus = Object.prototype.hasOwnProperty.call(d, 'dayStatuses');
+    remote.supportsRestHours = d.supportsRestHours === true;
     const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts, d.dayStatuses]);
     if (!opts.force && remote.snapshot && sig === remote.lastSig) {
       return { ok: true, changed: false, data: d };
@@ -7239,4 +7293,3 @@
     initApp();
   }
 })();
-

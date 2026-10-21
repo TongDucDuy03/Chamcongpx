@@ -398,10 +398,13 @@
                   <span class="slot-time-arrow">→</span>
                   <div class="slot-time-field">
                     <span>Đến</span>
-                    <input type="time" id="restEnd" class="form-control slot-time-input" value="15:15" />
+                    <input type="time" id="restEnd" class="form-control slot-time-input" value="17:15" />
                   </div>
                 </div>
-                <div id="restHoursLabel" class="rest-hours-label">Tổng: 8 giờ</div>
+                <label class="section-label" for="restActualHours">Số giờ làm thực tế</label>
+                <input type="number" id="restActualHours" class="form-control" min="0.01" max="24" step="0.01" inputmode="decimal" value="8" aria-describedby="restHoursHelp restHoursLabel" />
+                <div id="restHoursHelp" class="sub-meta-text">Ví dụ 07:15–17:15: nghỉ trưa 2 giờ thì nhập 8; làm xuyên trưa thì nhập 10. Để trống để tính theo giờ bắt đầu và kết thúc.</div>
+                <div id="restHoursLabel" class="rest-hours-label" aria-live="polite">Tổng: 8 giờ</div>
               </div>
             </div>
 

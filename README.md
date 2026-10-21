@@ -10,7 +10,7 @@ Web đang chạy tại: https://tongducduy03.github.io/Chamcongpx/
 - *Báo tăng ca*: chọn ngày (Hôm nay / Hôm qua), chọn mẫu ca, chọn nội dung việc, bấm Lưu.
 - *Nghỉ / về sớm* (mục 2 của form, báo cùng lúc với tăng ca): Nghỉ sáng / Nghỉ chiều → `X/2`, Nghỉ cả ngày → `P`, về sớm (hoặc đi muộn) 1 giờ → `-1`. Ví dụ nghỉ sáng, tối tăng ca 1 giờ là `X/2+1`; sáng tăng ca 1 giờ, chiều về sớm 1 giờ là `X+1-1`. Về sớm ghi riêng, không trừ vào giờ tăng ca, và không đưa vào file Excel tăng ca.
 - *Bảng công*: xem cả tháng, mỗi ngày là `X`, `X+1`, `X+4`... và tổng giờ tăng ca. Bấm vào một ngày để xem hoặc sửa.
-- Chủ nhật và ngày lễ: chỉ báo nếu có đi làm, ghi đúng số giờ (đủ ngày là 8 giờ).
+- Chủ nhật và ngày lễ: chỉ báo nếu có đi làm. Nhập giờ bắt đầu/kết thúc và **Số giờ làm thực tế**: 07:15–17:15 nghỉ trưa 2 giờ thì nhập **8**, làm xuyên trưa thì nhập **10**. Để trống số giờ để tính theo khoảng giờ; khi đổi giờ bắt đầu/kết thúc, số giờ tự chỉnh được xóa để tính lại. Nút **Đủ ngày (8 giờ)** chọn 07:15–17:15 với 8 giờ thực tế. Bảng công và Excel dùng số giờ thực tế đã lưu.
 - Mất mạng thì dữ liệu được giữ trên điện thoại và tự gửi khi có mạng.
 
 **Quản đốc (admin)** — đăng nhập bằng tên `admin`.
@@ -29,6 +29,8 @@ Khi chưa cài đặt, ứng dụng chạy chế độ thử: dữ liệu chỉ 
 4. Mở file `config.js`, điền **Project URL** và khóa **Publishable** (Project Settings → API Keys), rồi đẩy lên GitHub. Chỉ dán khóa Publishable/anon, **không bao giờ dán khóa secret / service_role**.
 
 Đẩy lên GitHub: vào *Settings → Pages → Source: GitHub Actions*; mỗi lần đẩy code lên nhánh `main`, web tự cập nhật sau khoảng 1 phút.
+
+Khi cập nhật tính năng sửa giờ làm Chủ nhật/ngày lễ: chạy lại `supabase_setup.sql` trên Supabase trước khi phát hành giao diện mới, rồi tải lại trang. Phiên bản máy chủ cũ chưa cho công nhân lưu số giờ tự chỉnh; giao diện sẽ báo cần cập nhật để tránh lưu sai giờ.
 
 ## Bot Telegram nhắc Quản đốc (tùy chọn) — làm 1 lần
 
