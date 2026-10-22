@@ -2490,6 +2490,15 @@ tr.data-row.rest-day-row td { background: #fff1f2; }
   margin: 0.35rem 0;
 }
 
+.audit-by-select {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  margin-left: 0.35rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8rem;
+}
+
 .audit-group {
   border-left: 3px solid var(--primary);
   background: var(--bg-subtle);

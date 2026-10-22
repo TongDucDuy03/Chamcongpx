@@ -5263,11 +5263,13 @@
     document.getElementById('modalMatrixCellQuick')?.classList.remove('open');
     state.activeExcelSheet = 'SHEET_HISTORY';
     state.adminFilterEmp = emp;
+    auditTab.by = 'work'; // từ 1 ô bảng công: xem các lần sửa CÔNG CỦA NGÀY ĐÓ, không phải các lần sửa trong ngày đó
     setAdminFilterDay(iso); // đổi sang tháng của ngày đó nếu cần, rồi vẽ lại
   }
 
   // ---- (B) Tab "Lịch sử sửa đổi" ----
-  const auditTab = { key: '', filter: null, entries: [], more: false, loading: false, message: '', seq: 0 };
+  // by = 'edit': ô Ngày / Tháng là ngày bấm Lưu (mặc định); 'work': ngày công bị sửa
+  const auditTab = { key: '', filter: null, entries: [], more: false, loading: false, message: '', seq: 0, by: 'edit' };
 
   function auditTabFilter() {
     let from;
@@ -5281,7 +5283,7 @@
       to = `${y}-${pad2(m)}-${pad2(new Date(y, m, 0).getDate())}`;
     }
     const employee = state.adminFilterEmp && state.adminFilterEmp !== 'ALL' ? state.adminFilterEmp : null;
-    return { from, to, employee };
+    return { from, to, employee, by: auditTab.by === 'work' ? 'work' : 'edit' };
   }
 
   function fetchAuditTab(append) {
@@ -5297,7 +5299,8 @@
         to: filter.to,
         employee: filter.employee,
         beforeId,
-        limit: AUDIT_PAGE_SIZE
+        limit: AUDIT_PAGE_SIZE,
+        by: filter.by
       })
     )
       .catch(() => ({ ok: false, message: 'Không tải được Lịch sử sửa đổi.' }))
@@ -5353,8 +5356,14 @@
     }
     const f = auditTab.filter;
     const scope = f.from === f.to ? `ngày ${isoDateToVnDate(f.from)}` : `tháng ${f.from.slice(5, 7)}/${f.from.slice(0, 4)}`;
+    const what = f.by === 'work' ? `các lần sửa công của ${scope}` : `những gì đã sửa trong ${scope}`;
     let html =
-      `<div class="audit-note">Đang xem: ${escapeHtml(scope)} · ${escapeHtml(f.employee ? `nhân viên ${f.employee}` : 'tất cả nhân viên')}. ` +
+      '<div class="audit-note audit-by-row"><label>Lọc ngày theo ' +
+      '<select class="form-control audit-by-select" data-audit-by="1">' +
+      `<option value="edit"${f.by === 'work' ? '' : ' selected'}>Ngày sửa (lúc bấm Lưu)</option>` +
+      `<option value="work"${f.by === 'work' ? ' selected' : ''}>Ngày công bị sửa</option>` +
+      '</select></label></div>' +
+      `<div class="audit-note">Đang xem: ${escapeHtml(what)} · ${escapeHtml(f.employee ? `nhân viên ${f.employee}` : 'tất cả nhân viên')}. ` +
       'Dùng ô Tháng, Ngày và Nhân viên ở trên để lọc. ' +
       '<button type="button" class="slot-mini-btn" data-audit-reload="1">Tải lại</button></div>' +
       auditNoteHtml('Thay đổi tài khoản của người không chấm công / đã xóa: chọn Nhân viên = Tất cả');
@@ -7155,6 +7164,12 @@
       if (!t) return;
       if (t.closest('[data-audit-more]')) auditTabLoadMore();
       else if (t.closest('[data-audit-reload]')) auditTabReload();
+    });
+    document.getElementById('sheetViewHistory')?.addEventListener('change', (e) => {
+      const sel = e.target && e.target.closest ? e.target.closest('[data-audit-by]') : null;
+      if (!sel) return;
+      auditTab.by = sel.value === 'work' ? 'work' : 'edit';
+      renderAuditHistorySheet(); // bộ lọc đổi -> tải lại
     });
     document.getElementById('btnMatrixQuickJumpSheet1')?.addEventListener('click', () => {
       if (!state.quickCellEmp) return;

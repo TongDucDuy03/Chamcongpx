@@ -80,8 +80,9 @@ create function pg_temp.sent(p_chat text) returns text language sql as $$
    where url like '%/sendMessage' and body ->> 'chat_id' = p_chat
 $$;
 create function pg_temp.list(p_user text, p_from date default null, p_to date default null, p_emp text default null,
-                             p_before bigint default null, p_limit int default 100) returns jsonb language sql as $$
-  select public.app_audit_list(pg_temp.tok(p_user), p_from, p_to, p_emp, p_before, p_limit)
+                             p_before bigint default null, p_limit int default 100, p_by text default null) returns jsonb language sql as $$
+  select case when p_by is null then public.app_audit_list(pg_temp.tok(p_user), p_from, p_to, p_emp, p_before, p_limit)
+              else public.app_audit_list(pg_temp.tok(p_user), p_from, p_to, p_emp, p_before, p_limit, p_by) end
 $$;
 create function pg_temp.audit_triggers() returns text language sql as $$
   select coalesce(string_agg(tgrelid::regclass::text || '.' || tgname, ',' order by tgrelid::regclass::text, tgname), '')
@@ -393,11 +394,11 @@ select pg_temp.t('ot.audit_log bật RLS và không cấp quyền cho anon / aut
   and not has_table_privilege('anon', 'ot.audit_log', 'select') and not has_table_privilege('authenticated', 'ot.audit_log', 'select')
   and not has_sequence_privilege('anon', 'ot.audit_log_id_seq', 'usage') and not has_sequence_privilege('authenticated', 'ot.audit_log_id_seq', 'usage'));
 select pg_temp.t('app_audit_list: anon / authenticated có quyền execute, public thì không',
-  has_function_privilege('anon', 'public.app_audit_list(text,date,date,text,bigint,int)', 'execute')
-  and has_function_privilege('authenticated', 'public.app_audit_list(text,date,date,text,bigint,int)', 'execute')
-  and not has_function_privilege('public', 'public.app_audit_list(text,date,date,text,bigint,int)', 'execute'));
+  has_function_privilege('anon', 'public.app_audit_list(text,date,date,text,bigint,int,text)', 'execute')
+  and has_function_privilege('authenticated', 'public.app_audit_list(text,date,date,text,bigint,int,text)', 'execute')
+  and not has_function_privilege('public', 'public.app_audit_list(text,date,date,text,bigint,int,text)', 'execute'));
 select pg_temp.t('app_audit_list là SECURITY DEFINER với search_path rỗng',
-  (select prosecdef and proconfig::text like '%search_path%' from pg_proc where oid = 'public.app_audit_list(text,date,date,text,bigint,int)'::regprocedure));
+  (select prosecdef and proconfig::text like '%search_path%' from pg_proc where oid = 'public.app_audit_list(text,date,date,text,bigint,int,text)'::regprocedure));
 
 -- ===== app_audit_list: nội dung, thứ tự, bộ lọc, phân trang =====
 select pg_temp.push('an', pg_temp.rec('r-list-1', 'An', -9, '17:15', '18:15')) as e \gset
@@ -465,6 +466,35 @@ select pg_temp.t('Tháng + người: tập con ở trên (4 dòng) cộng thêm 
   and not exists (select 1 from jsonb_array_elements(:'d1'::jsonb -> 'entries') d where d -> 'id' not in (select e -> 'id' from jsonb_array_elements(:'mo'::jsonb -> 'entries') e))
   and not exists (select 1 from jsonb_array_elements(:'mo'::jsonb -> 'entries') e where e ->> 'targetName' = 'Khác'), :'mo');
 delete from ot.audit_log where target_name in ('Kiểm', 'Khác') or (target_name is null and work_date in (ot.vn_today() - 30, ot.vn_today() - 29));
+-- Lọc theo NGÀY SỬA (p_by = 'edit', tab Lịch sử): hôm nay sửa công của ngày cách đây 13 ngày -> lọc hôm nay là thấy
+select pg_temp.push('admin', pg_temp.rec('r-edit-day', 'An', -13, '17:15', '18:15')) as e \gset
+select pg_temp.t('p_by=edit: lọc HÔM NAY thấy lần sửa công của ngày -13 (workDate vẫn là ngày -13)',
+  :'e' = '' and exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), null, null, 200, 'edit') -> 'entries') e
+                where e -> 'after' ->> 'id' = 'r-edit-day' and e ->> 'workDate' = pg_temp.dmy(-13)), :'e');
+select pg_temp.t('p_by=work (mặc định): lọc HÔM NAY không thấy, lọc ngày -13 mới thấy',
+  not exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), null, null, 200) -> 'entries') e
+              where e -> 'after' ->> 'id' = 'r-edit-day')
+  and not exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), null, null, 200, 'work') -> 'entries') e
+              where e -> 'after' ->> 'id' = 'r-edit-day')
+  and exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today() - 13, ot.vn_today() - 13, 'An') -> 'entries') e
+              where e -> 'after' ->> 'id' = 'r-edit-day'));
+select pg_temp.t('p_by=edit + người: chỉ dòng của người đó, không kèm chốt / bỏ chốt / lễ của ngày',
+  exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), 'An', null, 200, 'edit') -> 'entries') e
+          where e -> 'after' ->> 'id' = 'r-edit-day')
+  and not exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), 'An', null, 200, 'edit') -> 'entries') e
+          where e ->> 'targetName' is distinct from 'An')
+  and not exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), 'Bình', null, 200, 'edit') -> 'entries') e
+          where e -> 'after' ->> 'id' = 'r-edit-day'));
+insert into ot.audit_log (at, action, target_name, work_date, source) values (now() - interval '3 days', 'record_add', 'Cũ-sửa', ot.vn_today(), 'sql');
+select pg_temp.t('p_by=edit: dòng sửa từ 3 ngày trước (dù công của hôm nay) không có khi lọc hôm nay, có khi lọc ngày -3',
+  not exists (select 1 from jsonb_array_elements(pg_temp.list('admin', ot.vn_today(), ot.vn_today(), 'Cũ-sửa', null, 200, 'edit') -> 'entries') e)
+  and jsonb_array_length(pg_temp.list('admin', ot.vn_today() - 3, ot.vn_today() - 3, 'Cũ-sửa', null, 200, 'edit') -> 'entries') = 1);
+delete from ot.audit_log where target_name = 'Cũ-sửa';
+select pg_temp.t('p_by lạ / rỗng: hiểu như ngày công (mặc định)',
+  (pg_temp.list('admin', ot.vn_today() - 13, ot.vn_today() - 13, 'An', null, 200, 'xyz') -> 'entries')
+  = (pg_temp.list('admin', ot.vn_today() - 13, ot.vn_today() - 13, 'An', null, 200) -> 'entries'));
+select pg_temp.t('Chỉ còn 1 hàm app_audit_list (bản 6 tham số cũ đã xóa)',
+  (select count(*) from pg_proc where proname = 'app_audit_list') = 1);
 -- Phân trang
 select count(*) as total from ot.audit_log \gset
 select pg_temp.t('Phân trang limit 7 + p_before_id: nối lại đúng toàn bộ, không trùng, giảm dần, more đúng',

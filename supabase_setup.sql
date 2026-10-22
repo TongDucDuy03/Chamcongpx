@@ -1283,14 +1283,18 @@ begin
 end $$;
 
 -- Xem lịch sử sửa đổi (chỉ quản trị viên). Lọc ngày theo coalesce(work_date, ngày VN của lúc ghi); phân trang bằng p_before_id.
+-- Bản cũ 6 tham số (chưa có p_by): xóa để không có 2 hàm cùng tên
+drop function if exists public.app_audit_list(text, date, date, text, bigint, int);
+
 create or replace function public.app_audit_list(p_token text, p_from date default null, p_to date default null,
                                                  p_employee text default null, p_before_id bigint default null,
-                                                 p_limit int default 100) returns jsonb
+                                                 p_limit int default 100, p_by text default 'work') returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
   v ot.employees;
   v_limit int := least(greatest(coalesce(p_limit, 100), 1), 200);
   v_emp text := nullif(btrim(coalesce(p_employee, '')), '');
+  v_edit boolean := lower(btrim(coalesce(p_by, ''))) = 'edit';
   v_ids bigint[];
   v_more boolean;
   v_entries jsonb;
@@ -1300,14 +1304,19 @@ begin
     perform ot.fail('forbidden', 'Chỉ quản trị viên được xem lịch sử sửa đổi.');
   end if;
 
-  -- Một quy tắc cho mọi bộ lọc: ngày = coalesce(work_date, ngày VN của lúc ghi) nằm trong [p_from, p_to].
-  -- Có p_employee: dòng của người đó, cộng dòng cấp ngày (không có đối tượng nhưng có work_date: chốt / bỏ chốt / ngày lễ).
+  -- p_by = 'work' (mặc định, hộp "Chi tiết công ngày"): ngày = ngày công bị sửa, coalesce(work_date, ngày VN của lúc ghi).
+  --   Có p_employee: dòng của người đó, cộng dòng cấp ngày (không có đối tượng nhưng có work_date: chốt / bỏ chốt / ngày lễ).
+  -- p_by = 'edit' (tab "Lịch sử sửa đổi"): ngày = ngày VN lúc bấm Lưu. Hôm nay sửa công ngày 09 thì lọc hôm nay là thấy.
+  --   Có p_employee: chỉ dòng của người đó.
   select array_agg(x.id order by x.id desc) into v_ids from (
     select a.id from ot.audit_log a
-     where (v_emp is null or a.target_name = v_emp or (a.target_name is null and a.work_date is not null))
+     where (v_emp is null or a.target_name = v_emp
+            or (not v_edit and a.target_name is null and a.work_date is not null))
        and (p_before_id is null or a.id < p_before_id)
-       and (p_from is null or coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) >= p_from)
-       and (p_to is null or coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) <= p_to)
+       and (p_from is null or (case when v_edit then (a.at at time zone 'Asia/Ho_Chi_Minh')::date
+                                    else coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) end) >= p_from)
+       and (p_to is null or (case when v_edit then (a.at at time zone 'Asia/Ho_Chi_Minh')::date
+                                  else coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) end) <= p_to)
      order by a.id desc limit v_limit + 1) x;
 
   v_more := coalesce(array_length(v_ids, 1), 0) > v_limit;
@@ -1382,7 +1391,7 @@ revoke all on function public.app_change_password(text, text, text) from public;
 revoke all on function public.app_pull(text, date, date) from public;
 revoke all on function public.app_pulse(text) from public;
 revoke all on function public.app_push(text, jsonb) from public;
-revoke all on function public.app_audit_list(text, date, date, text, bigint, int) from public;
+revoke all on function public.app_audit_list(text, date, date, text, bigint, int, text) from public;
 
 grant execute on function public.app_login(text, text) to anon, authenticated;
 grant execute on function public.app_logout(text) to anon, authenticated;
@@ -1390,6 +1399,6 @@ grant execute on function public.app_change_password(text, text, text) to anon, 
 grant execute on function public.app_pull(text, date, date) to anon, authenticated;
 grant execute on function public.app_pulse(text) to anon, authenticated;
 grant execute on function public.app_push(text, jsonb) to anon, authenticated;
-grant execute on function public.app_audit_list(text, date, date, text, bigint, int) to anon, authenticated;
+grant execute on function public.app_audit_list(text, date, date, text, bigint, int, text) to anon, authenticated;
 
 notify pgrst, 'reload schema';

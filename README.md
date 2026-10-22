@@ -73,6 +73,8 @@ Cài đặt:
 
 Máy chủ tự ghi lại ai sửa gì, lúc nào, của ai, ngày nào (ca tăng ca, nghỉ / về sớm, chốt / bỏ chốt ngày, duyệt sửa sau chốt, ngày lễ, tài khoản; không ghi mật khẩu), giữ 400 ngày. Chỉ Admin xem được (hộp "Chi tiết công ngày" và tab "Lịch sử sửa đổi"). Chỉ có khi dùng Supabase. **Cập nhật bản cũ: chạy lại `supabase_setup.sql` trong SQL Editor** (an toàn, không mất dữ liệu); chưa chạy thì web báo "Máy chủ chưa có Lịch sử sửa đổi". Thay đổi làm trực tiếp bằng SQL Editor cũng được ghi (không có tên người sửa).
 
+Tab "Lịch sử sửa đổi" mặc định lọc theo **ngày sửa** (hôm 22/10 sửa công ngày 09/10 thì chọn ngày 22/10 là thấy); ô "Lọc ngày theo" chuyển sang **ngày công bị sửa**. Hộp "Chi tiết công ngày" luôn hiện các lần sửa công của đúng ô đó.
+
 ## Bảo mật
 
 - Mọi bảng dữ liệu nằm trong schema riêng `ot`, không mở ra ngoài API. Trình duyệt chỉ gọi được các hàm `app_*` (đăng nhập, đăng xuất, đổi mật khẩu, tải, hỏi nhanh có gì mới, lưu, và 4 hàm Telegram), mỗi hàm tự kiểm tra phiên đăng nhập.

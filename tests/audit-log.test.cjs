@@ -64,7 +64,7 @@ function fixture({ remoteMode = true, respond = null } = {}) {
     syncWithCentralServer = async () => ({});
     window.api = { state, remote, renderAdminDashboard, auditGroupsHtml, auditEntryLines, auditGroupEntries,
       openMatrixCellQuickModal, renderMatrixCellQuickModal, loadQuickAudit, setupQuickAudit, jumpQuickAuditToHistoryTab,
-      renderAuditHistorySheet, auditTabLoadMore, auditAfterPush, remotePushInner, remotePush, setAdminFilterDay };
+      renderAuditHistorySheet, auditTabLoadMore, auditAfterPush, remotePushInner, remotePush, setAdminFilterDay, auditTab };
   ` + src.slice(tail);
   vm.runInNewContext(src, ctx);
   return { api: window.api, elements, calls, el: (id) => document.getElementById(id) };
@@ -378,7 +378,8 @@ test('modal: "Xem tất cả" switches to the history tab with employee and day 
   await flush();
   const c = calls.filter((x) => x.fn === 'app_audit_list');
   assert.equal(c.length, 1);
-  assert.deepEqual(c[0].args, { p_token: 'tok', p_from: '2026-10-21', p_to: '2026-10-21', p_employee: 'An', p_before_id: null, p_limit: 100 });
+  // từ 1 ô bảng công: xem các lần sửa công CỦA NGÀY ĐÓ
+  assert.deepEqual(c[0].args, { p_token: 'tok', p_from: '2026-10-21', p_to: '2026-10-21', p_employee: 'An', p_before_id: null, p_limit: 100, p_by: 'work' });
 });
 
 test('tab: fetches only when active, caches by filter, month range and ALL -> null', async () => {
@@ -394,7 +395,7 @@ test('tab: fetches only when active, caches by filter, month range and ALL -> nu
   await flush();
   assert.equal(el('sheetViewHistory').style.display, 'block');
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].args, { p_token: 'tok', p_from: '2026-10-01', p_to: '2026-10-31', p_employee: null, p_before_id: null, p_limit: 100 });
+  assert.deepEqual(calls[0].args, { p_token: 'tok', p_from: '2026-10-01', p_to: '2026-10-31', p_employee: null, p_before_id: null, p_limit: 100, p_by: 'edit' });
   assert.match(el('sheetViewHistory').innerHTML, /Chốt ngày/);
   assert.match(el('sheetViewHistory').innerHTML, /chọn Nhân viên = Tất cả/);
 
@@ -415,6 +416,57 @@ test('tab: fetches only when active, caches by filter, month range and ALL -> nu
   assert.equal(calls.length, 3);
   assert.equal(calls[2].args.p_from, '2026-10-05');
   assert.equal(calls[2].args.p_to, '2026-10-05');
+});
+
+test('tab: mặc định lọc theo NGÀY SỬA (hôm nay sửa công ngày 09 thì lọc hôm nay là thấy); chọn "Ngày công bị sửa" thì lọc theo ngày công', async () => {
+  const { api, calls, el } = fixture({
+    respond: () => entriesResponse([ent('record_edit', { atVn: '22/10/2026 10:00', workDate: '09/10/2026',
+      before: { ...sh('a', '17:15', '18:15'), start: '09/10/2026 17:15', end: '09/10/2026 18:15' },
+      after: { ...sh('a', '17:15', '19:15'), start: '09/10/2026 17:15', end: '09/10/2026 19:15' } })])
+  });
+  seed(api);
+  api.state.adminFilterDay = '2026-10-22';
+  api.state.activeExcelSheet = 'SHEET_HISTORY';
+  api.renderAdminDashboard();
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, { p_token: 'tok', p_from: '2026-10-22', p_to: '2026-10-22', p_employee: null, p_before_id: null, p_limit: 100, p_by: 'edit' });
+  let html = el('sheetViewHistory').innerHTML;
+  assert.match(html, /<option value="edit" selected>Ngày sửa \(lúc bấm Lưu\)<\/option>/);
+  assert.match(html, /những gì đã sửa trong ngày 22\/10\/2026/);
+  assert.match(html, /An ngày 09\/10\/2026/, 'khối ghi rõ công của ngày nào bị sửa');
+
+  api.auditTab.by = 'work'; // như khi chọn "Ngày công bị sửa"
+  api.renderAuditHistorySheet();
+  await flush();
+  assert.equal(calls.length, 2, 'đổi cách lọc thì tải lại');
+  assert.equal(calls[1].args.p_by, 'work');
+  html = el('sheetViewHistory').innerHTML;
+  assert.match(html, /<option value="work" selected>Ngày công bị sửa<\/option>/);
+  assert.match(html, /các lần sửa công của ngày 22\/10\/2026/);
+
+  // Xem thêm giữ nguyên cách lọc
+  api.auditTab.more = true;
+  api.auditTabLoadMore();
+  await flush();
+  assert.equal(calls[2].args.p_by, 'work');
+});
+
+test('remote.js auditList: chỉ gửi p_by khi có (máy chủ tự hiểu mặc định là ngày công)', async () => {
+  const sent = [];
+  global.fetch = async (url, opts) => {
+    sent.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, json: async () => ({ ok: true, entries: [], more: false }) };
+  };
+  try {
+    const c = R.createClient({ url: 'https://x.invalid', key: 'k' });
+    await c.auditList('tok', { from: '2026-10-22', to: '2026-10-22', by: 'edit' });
+    await c.auditList('tok', { from: '2026-10-09', to: '2026-10-09', employee: 'An' });
+    assert.equal(sent[0].p_by, 'edit');
+    assert.equal('p_by' in sent[1], false);
+  } finally {
+    global.fetch = realFetch;
+  }
 });
 
 test('tab: "Xem thêm" pages with p_before_id = last id and appends', async () => {

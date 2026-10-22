@@ -78,14 +78,17 @@
     /** Lịch sử sửa đổi (chỉ Quản đốc). Máy chủ cũ chưa có hàm → res.auditMissing = true. */
     async function auditList(token, o) {
       const f = o || {};
-      const res = await rpc('app_audit_list', {
+      const args = {
         p_token: token,
         p_from: f.from || null,
         p_to: f.to || null,
         p_employee: f.employee || null,
         p_before_id: f.beforeId === undefined || f.beforeId === null ? null : f.beforeId,
         p_limit: f.limit || 100
-      });
+      };
+      // by = 'edit': lọc theo ngày sửa; không truyền thì máy chủ lọc theo ngày công bị sửa
+      if (f.by) args.p_by = f.by;
+      const res = await rpc('app_audit_list', args);
       if (!res.ok && (res.code === 'PGRST202' || res.code === '42883' || res.status === 404)) {
         res.message = AUDIT_MISSING_MESSAGE;
         res.auditMissing = true;
