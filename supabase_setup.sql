@@ -122,6 +122,28 @@ create table if not exists ot.meta (
 insert into ot.meta (id) values (1) on conflict (id) do nothing;
 alter table ot.employees add column if not exists rev bigint not null default 0;
 
+-- Phân quyền theo tài khoản: "có chấm công cá nhân", nhận báo cáo quản lý / nhắc cá nhân, Telegram đã kết nối.
+-- Di trú CHỈ MỘT LẦN (khi cột has_timesheet vừa được thêm): tài khoản admin sẵn có không chấm công, nhận báo cáo quản lý.
+-- Chạy lại file này không ghi đè giá trị người dùng đã chỉnh.
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema = 'ot' and table_name = 'employees' and column_name = 'has_timesheet'
+  ) then
+    alter table ot.employees add column has_timesheet boolean not null default true;
+    alter table ot.employees add column notify_manager boolean not null default false;
+    alter table ot.employees add column notify_personal boolean not null default true;
+    update ot.employees set has_timesheet = false, notify_manager = true where role = 'admin';
+  end if;
+end $$;
+alter table ot.employees add column if not exists has_timesheet boolean not null default true;
+alter table ot.employees add column if not exists notify_manager boolean not null default false;
+alter table ot.employees add column if not exists notify_personal boolean not null default true;
+alter table ot.employees add column if not exists tg_chat_id text;
+alter table ot.employees add column if not exists tg_name text;
+alter table ot.employees add column if not exists tg_linked_at timestamptz;
+
 alter table ot.employees enable row level security;
 alter table ot.meta enable row level security;
 alter table ot.sessions enable row level security;
@@ -248,7 +270,7 @@ begin
     perform ot.fail('unauthorized', 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
   end if;
   select * into e from ot.employees where id = s.employee_id;
-  if e.role = 'worker' and e.end_date is not null and e.end_date < ot.vn_today() then
+  if e.end_date is not null and e.end_date < ot.vn_today() then
     perform ot.fail('inactive', 'Tài khoản đã ngừng sử dụng.');
   end if;
   if s.last_seen < now() - interval '1 hour' then
@@ -294,7 +316,7 @@ begin
   end if;
 
   if v.password_hash = extensions.crypt(p_password, v.password_hash) then
-    if v.role = 'worker' and v.end_date is not null and v.end_date < ot.vn_today() then
+    if v.end_date is not null and v.end_date < ot.vn_today() then
       return jsonb_build_object('ok', false, 'error', 'inactive',
         'message', 'Tài khoản này đã ngừng sử dụng. Vui lòng liên hệ Quản đốc.');
     end if;
@@ -304,7 +326,8 @@ begin
     values (ot.hash_token(v_token), v.id,
             now() + case when v.role = 'admin' then interval '12 hours' else interval '30 days' end);
     return jsonb_build_object('ok', true, 'token', v_token, 'role', v.role, 'name', v.name,
-      'username', v.username, 'mustChangePassword', v.must_change_password);
+      'username', v.username, 'mustChangePassword', v.must_change_password,
+      'hasTimesheet', v.has_timesheet);
   end if;
 
   update ot.employees
@@ -386,17 +409,27 @@ begin
            'endDate', e.end_date,
            'mustChangePassword', e.must_change_password,
            'hasRecords', exists (select 1 from ot.records r where r.employee_id = e.id)
-                         or exists (select 1 from ot.day_status s where s.employee_id = e.id)
+                         or exists (select 1 from ot.day_status s where s.employee_id = e.id),
+           'role', e.role,
+           'hasTimesheet', e.has_timesheet,
+           'notifyManager', e.notify_manager,
+           'notifyPersonal', e.notify_personal,
+           'telegramLinked', e.tg_chat_id is not null,
+           'telegramName', e.tg_name,
+           'telegramLinkedAt', case when e.tg_linked_at is null then null
+                                    else to_char(e.tg_linked_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') end
          ) order by e.name), '[]'::jsonb)
     into v_employees
     from ot.employees e
-   where e.role = 'worker' and (v.role = 'admin' or e.id = v.id);
+   where v.role = 'admin' or e.id = v.id;
 
+  -- Admin có chấm công: ngoài cửa sổ đang xem còn nhận ca / nghỉ của chính mình trong 400 ngày gần nhất (như công nhân)
   select coalesce(jsonb_agg(ot.record_json(r, e.name) order by r.start_ts, r.id), '[]'::jsonb)
     into v_records
     from ot.records r join ot.employees e on e.id = r.employee_id
-   where r.work_date between d_from and d_to
-     and (v.role = 'admin' or r.employee_id = v.id);
+   where (r.work_date between d_from and d_to and (v.role = 'admin' or r.employee_id = v.id))
+      or (v.role = 'admin' and v.has_timesheet and r.employee_id = v.id
+          and r.work_date between today - 400 and today + 60);
 
   select coalesce(jsonb_object_agg(to_char(h.work_date, 'DD/MM/YYYY'), h.name), '{}'::jsonb)
     into v_holidays from ot.holidays h;
@@ -420,8 +453,9 @@ begin
            jsonb_build_object('leave', s.leave, 'earlyHours', s.early_hours)), '{}'::jsonb)
     into v_statuses
     from ot.day_status s join ot.employees e on e.id = s.employee_id
-   where s.work_date between d_from and d_to
-     and (v.role = 'admin' or s.employee_id = v.id);
+   where (s.work_date between d_from and d_to and (v.role = 'admin' or s.employee_id = v.id))
+      or (v.role = 'admin' and v.has_timesheet and s.employee_id = v.id
+          and s.work_date between today - 400 and today + 60);
 
   return jsonb_build_object(
     'ok', true,
@@ -429,6 +463,8 @@ begin
     'name', v.name,
     'username', v.username,
     'mustChangePassword', v.must_change_password,
+    'me', jsonb_build_object('name', v.name, 'role', v.role, 'hasTimesheet', v.has_timesheet,
+                             'telegramLinked', v.tg_chat_id is not null, 'telegramName', v.tg_name),
     'serverTime', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'vnToday', to_char(today, 'YYYY-MM-DD'),
     'sig', v_sig,
@@ -494,6 +530,11 @@ declare
   v_eid bigint;
   v_leave text;
   v_early numeric;
+  v_role text;
+  v_ht boolean;
+  v_nm boolean;
+  v_np boolean;
+  v_touch_emp boolean := false;
 begin
   v := ot.require_session(p_token);
   is_admin := (v.role = 'admin');
@@ -514,7 +555,8 @@ begin
   if jsonb_array_length(ot.arr(p_ops, 'recordsUpsert')) > v_limit
      or jsonb_array_length(ot.arr(p_ops, 'recordsDelete')) > v_limit
      or jsonb_array_length(ot.arr(p_ops, 'statusUpsert')) > v_limit
-     or jsonb_array_length(ot.arr(p_ops, 'statusDelete')) > v_limit then
+     or jsonb_array_length(ot.arr(p_ops, 'statusDelete')) > v_limit
+     or jsonb_array_length(ot.arr(p_ops, 'alertsUpsert')) > v_limit then
     perform ot.fail('too_many', 'Gửi quá nhiều dòng cùng lúc.');
   end if;
 
@@ -531,9 +573,44 @@ begin
     if v_user !~ '^[a-z0-9._-]{2,32}$' then
       perform ot.fail('bad_employee', 'Tên đăng nhập chỉ gồm chữ không dấu, số, dấu chấm, gạch (2-32 ký tự).');
     end if;
-    if v_user in ('admin', 'quantri') then
+    select * into emp from ot.employees where name = v_name;
+    -- Chỉ cấm ĐẶT tên đăng nhập admin/quantri; dòng admin sẵn có giữ nguyên tên đăng nhập thì sửa được
+    if v_user in ('admin', 'quantri') and (not found or emp.username <> v_user) then
       perform ot.fail('bad_employee', 'Tên đăng nhập "' || v_user || '" dành riêng cho quản trị viên.');
     end if;
+    if found and emp.username = 'admin' and v_user <> 'admin' then
+      perform ot.fail('bad_employee', 'Không đổi tên đăng nhập "admin" (dùng để lấy lại mật khẩu khi quên).');
+    end if;
+    -- Quyền & cờ: thiếu = giữ nguyên khi cập nhật; mặc định khi thêm mới: worker / có chấm công / không nhận báo cáo quản lý / nhận nhắc cá nhân
+    v_role := case when found then emp.role else 'worker' end;
+    if item ? 'role' and jsonb_typeof(item -> 'role') <> 'null' then
+      v_role := item ->> 'role';
+      if v_role is null or v_role not in ('worker', 'admin') then
+        perform ot.fail('bad_employee', 'Quyền không hợp lệ (chỉ Công nhân hoặc Admin).');
+      end if;
+    end if;
+    v_ht := case when found then emp.has_timesheet else true end;
+    v_nm := case when found then emp.notify_manager else false end;
+    v_np := case when found then emp.notify_personal else true end;
+    if item ? 'hasTimesheet' and jsonb_typeof(item -> 'hasTimesheet') <> 'null' then
+      if jsonb_typeof(item -> 'hasTimesheet') <> 'boolean' then
+        perform ot.fail('bad_employee', 'Giá trị "Có chấm công" không hợp lệ.');
+      end if;
+      v_ht := (item ->> 'hasTimesheet')::boolean;
+    end if;
+    if item ? 'notifyManager' and jsonb_typeof(item -> 'notifyManager') <> 'null' then
+      if jsonb_typeof(item -> 'notifyManager') <> 'boolean' then
+        perform ot.fail('bad_employee', 'Giá trị "Nhận báo cáo quản lý" không hợp lệ.');
+      end if;
+      v_nm := (item ->> 'notifyManager')::boolean;
+    end if;
+    if item ? 'notifyPersonal' and jsonb_typeof(item -> 'notifyPersonal') <> 'null' then
+      if jsonb_typeof(item -> 'notifyPersonal') <> 'boolean' then
+        perform ot.fail('bad_employee', 'Giá trị "Nhận thông báo cá nhân" không hợp lệ.');
+      end if;
+      v_np := (item ->> 'notifyPersonal')::boolean;
+    end if;
+    v_nm := v_nm and v_role = 'admin';   -- công nhân không bao giờ nhận báo cáo quản lý
     v_type := coalesce(nullif(item ->> 'defaultOvertimeType', ''), 'Ngoài khoán');
     if v_type not in ('Ngoài khoán', 'Trong khoán') then
       perform ot.fail('bad_employee', 'Loại tăng ca mặc định không hợp lệ.');
@@ -553,35 +630,55 @@ begin
     end if;
 
     select * into emp from ot.employees where name = v_name;
+    v_touch_emp := true;
     begin
       if found then
-        if emp.role = 'admin' then
-          perform ot.fail('forbidden', 'Không thể sửa tài khoản quản trị viên ở đây.');
+        -- Tài khoản gốc "admin" là đường cứu hộ: không hạ quyền, không cho nghỉ, không xóa
+        if emp.username = 'admin' and (v_role <> emp.role or v_ed is not null) then
+          perform ot.fail('forbidden', 'Không thể hạ quyền / cho nghỉ / xóa tài khoản quản trị gốc (admin).');
+        end if;
+        if emp.id = v.id then
+          if v_role <> emp.role then
+            perform ot.fail('forbidden', 'Không thể tự đổi quyền của chính mình.');
+          end if;
+          if v_ed is not null then
+            perform ot.fail('forbidden', 'Không thể tự cho chính mình nghỉ việc.');
+          end if;
         end if;
         update ot.employees
            set username = v_user, default_overtime_type = v_type, default_work_mode = v_mode,
-               start_date = v_sd, end_date = v_ed, updated_at = now(), rev = rev + 1
+               start_date = v_sd, end_date = v_ed, role = v_role, has_timesheet = v_ht,
+               notify_manager = v_nm, notify_personal = v_np, updated_at = now(), rev = rev + 1
          where id = emp.id;
+        -- Đổi quyền hoặc đặt ngày nghỉ việc đã tới / đã qua thì bắt đăng nhập lại (ngày nghỉ tương lai không đá ra ngay)
+        if v_role <> emp.role or (v_ed is not null and v_ed <= today and v_ed is distinct from emp.end_date) then
+          delete from ot.sessions where employee_id = emp.id;
+        end if;
         if v_pwd is not null then
           update ot.employees
              set password_hash = extensions.crypt(v_pwd, extensions.gen_salt('bf', 10)),
                  must_change_password = true, failed_attempts = 0, locked_until = null
            where id = emp.id;
-          delete from ot.sessions where employee_id = emp.id;
+          delete from ot.sessions where employee_id = emp.id and token_hash <> ot.hash_token(p_token);
         end if;
       else
         if v_pwd is null then
           perform ot.fail('bad_employee', 'Cần đặt mật khẩu cho nhân viên mới.');
         end if;
-        insert into ot.employees (name, username, password_hash, default_overtime_type, default_work_mode,
-                                  start_date, end_date, must_change_password)
-        values (v_name, v_user, extensions.crypt(v_pwd, extensions.gen_salt('bf', 10)), v_type, v_mode,
-                v_sd, v_ed, true);
+        insert into ot.employees (name, username, password_hash, role, default_overtime_type, default_work_mode,
+                                  start_date, end_date, must_change_password, has_timesheet, notify_manager, notify_personal)
+        values (v_name, v_user, extensions.crypt(v_pwd, extensions.gen_salt('bf', 10)), v_role, v_type, v_mode,
+                v_sd, v_ed, true, v_ht, v_nm, v_np);
       end if;
     exception when unique_violation then
       perform ot.fail('duplicate', 'Tên đăng nhập "' || v_user || '" hoặc tên nhân viên đã có người dùng. Vui lòng chọn tên khác.');
     end;
   end loop;
+
+  -- Sau mọi thay đổi tài khoản phải còn ít nhất 1 admin đang làm (chưa có ngày nghỉ việc) để không ai bị khóa khỏi hệ thống
+  if v_touch_emp and not exists (select 1 from ot.employees where role = 'admin' and end_date is null) then
+    perform ot.fail('last_admin', 'Phải còn ít nhất một tài khoản Admin đang làm việc. Hãy giữ lại một Admin trước khi hạ quyền hoặc cho nghỉ việc.');
+  end if;
 
   -- ===== Xóa ca =====
   for v_id in select jsonb_array_elements_text(ot.arr(p_ops, 'recordsDelete')) loop
@@ -599,7 +696,7 @@ begin
   for item in select jsonb_array_elements(ot.arr(p_ops, 'recordsUpsert')) loop
     if is_admin then
       select * into rec_emp from ot.employees
-       where name = btrim(coalesce(item ->> 'employeeName', '')) and role = 'worker';
+       where name = btrim(coalesce(item ->> 'employeeName', ''));
       if not found then
         perform ot.fail('bad_employee', 'Không tìm thấy nhân viên: ' || coalesce(item ->> 'employeeName', ''));
       end if;
@@ -613,6 +710,11 @@ begin
     v_id := btrim(coalesce(item ->> 'id', ''));
     if v_id !~ '^[A-Za-z0-9_-]{4,64}$' then
       perform ot.fail('bad_record', 'Mã ca không hợp lệ.');
+    end if;
+    -- Chỉ chặn THÊM ca mới cho người không chấm công; sửa ca đã có (ví dụ Quản đốc duyệt ô vàng) vẫn được
+    if not rec_emp.has_timesheet
+       and not exists (select 1 from ot.records where id = v_id and employee_id = rec_emp.id) then
+      perform ot.fail('no_timesheet', 'Người này không chấm công cá nhân: ' || rec_emp.name);
     end if;
     v_job := btrim(coalesce(item ->> 'jobContent', ''));
     if v_job = '' then
@@ -744,12 +846,16 @@ begin
     end if;
     v_wd := ot.parse_vn_date(split_part(v_key, '::', 1));
     v_name := substr(v_key, position('::' in v_key) + 2);
-    select * into emp from ot.employees where name = v_name and role = 'worker';
+    select * into emp from ot.employees where name = v_name;
     if not found then
       perform ot.fail('bad_employee', 'Không tìm thấy nhân viên: ' || v_name);
     end if;
     if not is_admin and emp.id <> v.id then
       perform ot.fail('forbidden', 'Bạn chỉ được báo nghỉ / về sớm cho chính mình.');
+    end if;
+    if not emp.has_timesheet
+       and not exists (select 1 from ot.day_status where employee_id = emp.id and work_date = v_wd) then
+      perform ot.fail('no_timesheet', 'Người này không chấm công cá nhân: ' || emp.name);
     end if;
     if (emp.start_date is not null and v_wd < emp.start_date) or (emp.end_date is not null and v_wd > emp.end_date) then
       perform ot.fail('not_employed', 'Nhân viên chưa vào làm hoặc đã nghỉ việc vào ngày ' || to_char(v_wd, 'DD/MM/YYYY') || '.');
@@ -787,7 +893,7 @@ begin
     end if;
     v_wd := ot.parse_vn_date(split_part(v_key, '::', 1));
     v_name := substr(v_key, position('::' in v_key) + 2);
-    select * into emp from ot.employees where name = v_name and role = 'worker';
+    select * into emp from ot.employees where name = v_name;
     if found then
       if not is_admin and emp.id <> v.id then
         perform ot.fail('forbidden', 'Bạn chỉ được sửa nghỉ / về sớm của chính mình.');
@@ -799,8 +905,17 @@ begin
 
   -- ===== Xóa nhân viên (chỉ khi chưa có dữ liệu tăng ca / nghỉ) =====
   for v_name in select jsonb_array_elements_text(ot.arr(p_ops, 'employeesDelete')) loop
-    select * into emp from ot.employees where name = v_name and role = 'worker';
+    select * into emp from ot.employees where name = v_name;
     if found then
+      if emp.username = 'admin' then
+        perform ot.fail('forbidden', 'Không thể hạ quyền / cho nghỉ / xóa tài khoản quản trị gốc (admin).');
+      end if;
+      if emp.role = 'admin' then
+        perform ot.fail('forbidden', 'Không xóa được tài khoản Admin "' || v_name || '". Hãy hạ quyền xuống Công nhân (hoặc cho nghỉ việc) trước.');
+      end if;
+      if emp.id = v.id then
+        perform ot.fail('forbidden', 'Không thể tự xóa chính mình.');
+      end if;
       if exists (select 1 from ot.records where employee_id = emp.id)
          or exists (select 1 from ot.day_status where employee_id = emp.id) then
         perform ot.fail('has_records', 'Nhân viên "' || v_name || '" đã có dữ liệu tăng ca nên không xóa được. Hãy dùng "Cho nghỉ việc".');
@@ -849,12 +964,19 @@ begin
     end if;
     v_wd := ot.parse_vn_date(split_part(v_key, '::', 1));
     v_name := substr(v_key, position('::' in v_key) + 2);
-    select * into emp from ot.employees where name = v_name and role = 'worker';
+    select * into emp from ot.employees where name = v_name;
     if not found then
       perform ot.fail('bad_employee', 'Không tìm thấy nhân viên: ' || v_name);
     end if;
     if not is_admin and emp.id <> v.id then
       perform ot.fail('forbidden', 'Bạn chỉ được gửi cảnh báo của chính mình.');
+    end if;
+    if not emp.has_timesheet and not exists (select 1 from ot.mod_alerts where alert_key = v_key) then
+      perform ot.fail('no_timesheet', 'Người này không chấm công cá nhân: ' || emp.name);
+    end if;
+    -- Công nhân chỉ tạo được cảnh báo cho ngày ĐÃ chốt (ngày chưa chốt: bỏ qua, không làm hỏng lần lưu)
+    if not is_admin and not exists (select 1 from ot.locked_days where work_date = v_wd) then
+      continue;
     end if;
     v_data := coalesce(item -> 'data', '{}'::jsonb);
     if jsonb_typeof(v_data) <> 'object' or length(v_data::text) > 20000 then
@@ -876,7 +998,7 @@ begin
 
   -- Báo cho máy khách biết có thay đổi (admin: mọi thay đổi; công nhân: chỉ phần liên quan tới họ)
   if v_bump_all then
-    update ot.employees set rev = rev + 1 where role = 'worker';
+    update ot.employees set rev = rev + 1 where true;
   elsif array_length(v_bump, 1) is not null then
     update ot.employees set rev = rev + 1 where id = any (v_bump);
   end if;
@@ -903,12 +1025,14 @@ begin
   if length(coalesce(p_password, '')) < 6 then
     raise exception 'Mật khẩu admin phải có ít nhất 6 ký tự.';
   end if;
-  insert into ot.employees (name, username, password_hash, role)
-  values ('Quản trị viên', 'admin', extensions.crypt(p_password, extensions.gen_salt('bf', 10)), 'admin');
+  insert into ot.employees (name, username, password_hash, role, has_timesheet, notify_manager)
+  values ('Quản trị viên', 'admin', extensions.crypt(p_password, extensions.gen_salt('bf', 10)), 'admin', false, true);
   return 'Đã tạo tài khoản admin. Đăng nhập trong ứng dụng bằng tên đăng nhập: admin';
 end $$;
 
 -- Quên mật khẩu admin:   select ot.reset_admin_password('mật-khẩu-mới');
+-- Chỉ áp cho tài khoản có tên đăng nhập "admin" (đường cứu hộ: đồng thời bỏ ngày nghỉ việc, trả lại quyền admin và mở khóa).
+-- Các Admin khác không bị đổi mật khẩu.
 create or replace function ot.reset_admin_password(p_password text) returns text
 language plpgsql set search_path = '' as $$
 begin
@@ -917,12 +1041,12 @@ begin
   end if;
   update ot.employees
      set password_hash = extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
-         failed_attempts = 0, locked_until = null, must_change_password = false
-   where role = 'admin';
+         failed_attempts = 0, locked_until = null, must_change_password = false, end_date = null, role = 'admin'
+   where username = 'admin';
   if not found then
-    raise exception 'Chưa có tài khoản admin. Hãy dùng: select ot.bootstrap_admin(''mật-khẩu'');';
+    raise exception 'Chưa có tài khoản có tên đăng nhập "admin". Hãy dùng: select ot.bootstrap_admin(''mật-khẩu'');';
   end if;
-  delete from ot.sessions where employee_id in (select id from ot.employees where role = 'admin');
+  delete from ot.sessions where employee_id in (select id from ot.employees where username = 'admin');
   return 'Đã đổi mật khẩu admin.';
 end $$;
 

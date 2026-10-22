@@ -388,6 +388,9 @@
     // Phiên đăng nhập & Phân quyền cô lập tài khoản
     authRole: null, // null | 'WORKER' | 'ADMIN'
     loggedInEmployeeName: null,
+    authEmployeeName: null, // tên tài khoản đang đăng nhập (cả Admin có tài khoản riêng); null với admin hằng của chế độ thử
+    authHasTimesheet: false, // tài khoản đang đăng nhập có chấm công cá nhân
+    authTelegram: null, // { linked, telegramName } của chính người đăng nhập (chế độ máy chủ)
     loginTargetAccount: 'Tống Đức Duy',
     loginPinBuffer: '',
 
@@ -952,6 +955,77 @@
   }
 
   // ==========================================================================
+  // AI CÓ TÊN TRONG BẢNG CÔNG & TÊN BÁO CÔNG CỦA CHÍNH NGƯỜI ĐĂNG NHẬP
+  // Quyền (Công nhân / Admin) KHÔNG quyết định ai có tên trong bảng công, chỉ cờ "Có chấm công cá nhân".
+  // ==========================================================================
+
+  function isTimesheetEmployee(emp) {
+    return Boolean(emp) && emp.hasTimesheet !== false;
+  }
+
+  /**
+   * Danh sách người của bảng công. Truyền `monthKey` (yyyy-mm) thì người đã tắt chấm công vẫn hiện
+   * nếu có ca / nghỉ / về sớm trong tháng đó (không để dữ liệu biến mất âm thầm).
+   */
+  function getTimesheetEmployees(monthKey) {
+    const all = state.employees || [];
+    if (!monthKey) return all.filter(isTimesheetEmployee);
+    const used = new Set();
+    (state.records || []).forEach((r) => {
+      if (r && r.employeeName && isRecordInMonth(r, monthKey)) used.add(r.employeeName);
+    });
+    Object.keys(state.dayStatuses || {}).forEach((k) => {
+      const [d, name] = k.split('::');
+      if (name && isRecordInMonth({ workDate: d }, monthKey)) used.add(name);
+    });
+    return all.filter((e) => isTimesheetEmployee(e) || used.has(e.name));
+  }
+
+  /** Tài khoản đang báo công bị tắt "Có chấm công cá nhân": máy chủ sẽ từ chối, nên chặn và báo trước */
+  function personalHasNoTimesheet() {
+    const name = personalName();
+    const e = (state.employees || []).find((x) => x.name === name);
+    return Boolean(e) && e.hasTimesheet === false;
+  }
+
+  function isAdminWithTimesheet() {
+    return state.authRole === 'ADMIN' && Boolean(state.authHasTimesheet) && Boolean(state.authEmployeeName);
+  }
+
+  /** Quản đốc có chấm công cá nhân được chuyển qua lại "Báo công của tôi" / "Quản lý phân xưởng" */
+  function canSwitchView() {
+    return isAdminWithTimesheet();
+  }
+
+  /** Tên báo công của chính người đăng nhập (form, bảng công, lịch sử ở màn hình công nhân) */
+  function personalName() {
+    if (state.authRole === 'WORKER' && state.loggedInEmployeeName) return state.loggedInEmployeeName;
+    if (isAdminWithTimesheet()) return state.authEmployeeName;
+    return state.selectedEmployeeName;
+  }
+
+  /** Công nhân / Quản đốc có chấm công: luôn khóa người đang chọn vào đúng tài khoản của mình */
+  function bindSelectedToPersonal() {
+    const bound =
+      (state.authRole === 'WORKER' && state.loggedInEmployeeName) || (isAdminWithTimesheet() && state.authEmployeeName);
+    if (bound) state.selectedEmployeeName = bound;
+  }
+
+  /** Chế độ thử: cờ chấm công của tài khoản đang đăng nhập đổi trong danh sách thì cập nhật theo */
+  function syncAuthFromEmployees() {
+    if (REMOTE_MODE || !state.authEmployeeName) return;
+    const me = state.employees.find((e) => e.name === state.authEmployeeName);
+    state.authHasTimesheet = Boolean(me) && me.hasTimesheet !== false;
+  }
+
+  function clearAuthIdentity() {
+    state.authEmployeeName = null;
+    state.authHasTimesheet = false;
+    state.authTelegram = null;
+    if (typeof closeTelegramDialog === 'function') closeTelegramDialog();
+  }
+
+  // ==========================================================================
   // NGHỈ (P) / VỀ SỚM THEO NGÀY: lưu riêng, không đụng ca tăng ca và file Excel tăng ca
   // Giờ hành chính: Sáng 07:15–11:15, Chiều 13:15–17:15. Đi muộn cũng ghi vào số giờ về sớm.
   // ==========================================================================
@@ -1076,7 +1150,12 @@
 
   function createDaySnapshot(workDateVn) {
     const snap = {};
+    // Chỉ người có chấm công, cộng người đã tắt chấm công nhưng vẫn có ca / nghỉ trong ngày này
+    const hasDataThatDay = (name) =>
+      state.records.some((r) => r.employeeName === name && r.workDate === workDateVn) ||
+      Boolean(state.dayStatuses && state.dayStatuses[`${workDateVn}::${name}`]);
     state.employees.forEach((emp) => {
+      if (!isTimesheetEmployee(emp) && !hasDataThatDay(emp.name)) return;
       snap[emp.name] = daySnapshotEntry(getEmployeeDaySummary(emp.name, workDateVn));
     });
     return snap;
@@ -1401,7 +1480,7 @@
     ensureDefaultLockedDays();
 
     if (!state.employees.some((e) => e.name === state.selectedEmployeeName)) {
-      state.selectedEmployeeName = state.employees[0]?.name || 'Tống Đức Duy';
+      state.selectedEmployeeName = getTimesheetEmployees()[0]?.name || state.employees[0]?.name || 'Tống Đức Duy';
     }
     if (state.loginTargetAccount !== '__ADMIN__' && !state.employees.some((e) => e.name === state.loginTargetAccount)) {
       state.loginTargetAccount = state.selectedEmployeeName;
@@ -1411,9 +1490,15 @@
       const sessionRaw = sessionStorage.getItem(AUTH_SESSION_KEY);
       if (sessionRaw) {
         const session = JSON.parse(sessionRaw);
-        if (session.role === 'ADMIN') {
+        const sessionAdminEmp =
+          session.role === 'ADMIN' && session.authEmployeeName
+            ? state.employees.find((e) => e.name === session.authEmployeeName && e.role === 'admin' && isEmployeeCurrentlyActive(e))
+            : null;
+        if (session.role === 'ADMIN' && (!session.authEmployeeName || sessionAdminEmp)) {
           state.authRole = 'ADMIN';
           state.loggedInEmployeeName = null;
+          state.authEmployeeName = sessionAdminEmp ? sessionAdminEmp.name : null;
+          state.authHasTimesheet = Boolean(sessionAdminEmp) && sessionAdminEmp.hasTimesheet !== false;
           state.adminUnlocked = true;
           state.activeMainTab = 'ADMIN_EXCEL';
         } else if (
@@ -1423,6 +1508,8 @@
         ) {
           state.authRole = 'WORKER';
           state.loggedInEmployeeName = session.employeeName;
+          state.authEmployeeName = session.employeeName;
+          state.authHasTimesheet = true;
           state.selectedEmployeeName = session.employeeName;
           state.adminUnlocked = false;
           state.activeMainTab = 'WORKER_MOBILE';
@@ -1443,7 +1530,8 @@
           AUTH_SESSION_KEY,
           JSON.stringify({
             role: state.authRole,
-            employeeName: state.loggedInEmployeeName
+            employeeName: state.loggedInEmployeeName,
+            authEmployeeName: state.authEmployeeName
           })
         );
       }
@@ -1454,6 +1542,7 @@
     if (REMOTE_MODE) await remoteLogoutCleanup();
     state.authRole = null;
     state.loggedInEmployeeName = null;
+    clearAuthIdentity();
     state.adminUnlocked = false;
     state.loginPinBuffer = '';
     state.lastServerAckReceipt = null;
@@ -1853,10 +1942,11 @@
     const usedNames = new Set(validRecords.map((r) => r.employeeName));
     const allEmployees = state.employees.length > 0 ? state.employees : DEFAULT_EMPLOYEES;
     // Chỉ đưa vào danh sách nhân viên của tháng: người đang làm trong tháng hoặc có dòng tăng ca trong tháng
+    // Người đã tắt chấm công chỉ có mặt nếu có dòng tăng ca trong tháng
     const employees = allEmployees.filter(
       (e) =>
         usedNames.has(e.name) ||
-        (!(e.endDate && e.endDate < exFirstIso) && !(e.startDate && e.startDate > exLastIso))
+        (isTimesheetEmployee(e) && !(e.endDate && e.endDate < exFirstIso) && !(e.startDate && e.startDate > exLastIso))
     );
     const empEndRow = employees.length + 1; // Bắt đầu từ A2 -> A{empEndRow}
 
@@ -2294,10 +2384,8 @@
   // ==========================================================================
 
   function syncWorkerDefaultsFromSelectedEmp() {
-    if (state.authRole === 'WORKER' && state.loggedInEmployeeName) {
-      state.selectedEmployeeName = state.loggedInEmployeeName;
-    }
-    const emp = state.employees.find((e) => e.name === state.selectedEmployeeName) || state.employees[0];
+    bindSelectedToPersonal();
+    const emp = state.employees.find((e) => e.name === state.selectedEmployeeName) || getTimesheetEmployees()[0];
     if (!emp) return;
     state.selectedEmployeeName = emp.name;
     state.mobileOvertimeType = emp.defaultOvertimeType || 'Ngoài khoán';
@@ -2368,6 +2456,8 @@
       if (isValidAdminPwd) {
         state.authRole = 'ADMIN';
         state.loggedInEmployeeName = null;
+        state.authEmployeeName = null;
+        state.authHasTimesheet = false;
         state.adminUnlocked = true;
         state.activeMainTab = 'ADMIN_EXCEL';
         try {
@@ -2423,11 +2513,15 @@
       (emp.pin && rawPassword === String(emp.pin));
 
     if (isPasswordMatch) {
-      state.authRole = 'WORKER';
-      state.loggedInEmployeeName = emp.name;
+      // Nhân viên có quyền Admin vào trang Quản đốc; có chấm công cá nhân thì chuyển được sang "Báo công của tôi"
+      const isAdminAccount = emp.role === 'admin';
+      state.authRole = isAdminAccount ? 'ADMIN' : 'WORKER';
+      state.loggedInEmployeeName = isAdminAccount ? null : emp.name;
+      state.authEmployeeName = emp.name;
+      state.authHasTimesheet = emp.hasTimesheet !== false;
       state.selectedEmployeeName = emp.name;
       state.workerMobileSubTab = 'FORM';
-      state.adminUnlocked = false;
+      state.adminUnlocked = isAdminAccount;
       state.lastServerAckReceipt = null;
       try {
         localStorage.setItem(LAST_LOGIN_USER_KEY, emp.username || rawUsername);
@@ -2437,7 +2531,7 @@
       saveLocalState(false);
       saveAuthSession();
       resetWorkerForm();
-      state.activeMainTab = 'WORKER_MOBILE';
+      state.activeMainTab = isAdminAccount ? 'ADMIN_EXCEL' : 'WORKER_MOBILE';
       playFeedbackSound('SUCCESS');
       renderAll();
       showToast(`Xin chào ${escapeHtml(emp.name)}.`, 'success');
@@ -2954,13 +3048,14 @@
   }
 
   function renderWorkerMobileView() {
-    // Khóa chặt tài khoản công nhân đang đăng nhập: chỉ được xem & báo tăng ca cho chính mình
-    if (state.authRole === 'WORKER' && state.loggedInEmployeeName) {
-      state.selectedEmployeeName = state.loggedInEmployeeName;
-    }
+    // Khóa chặt tài khoản đang đăng nhập: chỉ được xem & báo tăng ca cho chính mình
+    bindSelectedToPersonal();
 
-    const emp = state.employees.find((e) => e.name === state.selectedEmployeeName) || state.employees[0];
+    const emp = state.employees.find((e) => e.name === state.selectedEmployeeName) || getTimesheetEmployees()[0];
     if (!emp) return;
+
+    const noTsBanner = document.getElementById('noTimesheetBanner');
+    if (noTsBanner) noTsBanner.style.display = personalHasNoTimesheet() ? 'block' : 'none';
 
     const nameEl = document.getElementById('mobileSelectedEmpName');
     const metaEl = document.getElementById('mobileSelectedEmpMeta');
@@ -3194,8 +3289,11 @@
     const submitBtn = document.getElementById('btnSubmitMobileOvertime');
     if (submitBtn && !state.isWaitingServerAck) {
       const nothingChosen = daily.checkedSlots.length === 0 && !daily.hasStatus && !hasExistingDay;
-      submitBtn.disabled = nothingChosen || Boolean(unsupportedReason);
-      if (unsupportedReason && btnSubmitText) {
+      const noTimesheet = personalHasNoTimesheet();
+      submitBtn.disabled = nothingChosen || Boolean(unsupportedReason) || noTimesheet;
+      if (noTimesheet && btnSubmitText) {
+        btnSubmitText.textContent = 'Tài khoản này không chấm công cá nhân';
+      } else if (unsupportedReason && btnSubmitText) {
         btnSubmitText.textContent = 'Ngày này cần Quản đốc sửa';
       } else if (nothingChosen && btnSubmitText) {
         btnSubmitText.textContent = daily.isRestDay
@@ -3213,9 +3311,7 @@
   // ==========================================================================
 
   function currentWorkerName() {
-    return state.authRole === 'WORKER' && state.loggedInEmployeeName
-      ? state.loggedInEmployeeName
-      : state.selectedEmployeeName;
+    return personalName();
   }
 
   function syncJobChipsToInput() {
@@ -3563,7 +3659,7 @@
   }
 
   function renderWorkerCalendar() {
-    const empName = state.loggedInEmployeeName || state.selectedEmployeeName;
+    const empName = personalName();
     const grid = document.getElementById('calGrid');
     if (!grid || !empName) return;
 
@@ -3764,6 +3860,11 @@
       return;
     }
 
+    if (personalHasNoTimesheet()) {
+      showToast('Tài khoản này không chấm công cá nhân — liên hệ Quản đốc nếu cần báo công.', 'warn');
+      return;
+    }
+
     if (state.isWaitingServerAck) {
       showToast('⏳ Đang lưu đơn tăng ca, vui lòng đợi trong giây lát!', 'warn');
       return;
@@ -3776,10 +3877,7 @@
       return;
     }
 
-    const activeWorkerName =
-      state.authRole === 'WORKER' && state.loggedInEmployeeName
-        ? state.loggedInEmployeeName
-        : state.selectedEmployeeName;
+    const activeWorkerName = personalName();
 
     const daily = computeCurrentMobileDailySlots();
     if (daily.isoDate > localIsoToday()) {
@@ -4210,16 +4308,17 @@
       dashContent.style.display = state.adminUnlocked ? 'block' : 'none';
     }
 
-    // Cập nhật dropdown bộ lọc nhân viên
+    // Cập nhật dropdown bộ lọc nhân viên (chỉ người có tên trong bảng công của tháng đang xem)
+    const rosterEmployees = getTimesheetEmployees(getSelectedMonthKey());
     const empSelect = document.getElementById('adminFilterEmployee');
     if (empSelect) {
       const currentVal = state.adminFilterEmp;
       empSelect.innerHTML =
-        `<option value="ALL">Tất cả nhân viên (${state.employees.length})</option>` +
-        state.employees
+        `<option value="ALL">Tất cả nhân viên (${rosterEmployees.length})</option>` +
+        rosterEmployees
           .map((e) => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.name)}</option>`)
           .join('');
-      empSelect.value = state.employees.some((e) => e.name === currentVal) ? currentVal : 'ALL';
+      empSelect.value = rosterEmployees.some((e) => e.name === currentVal) ? currentVal : 'ALL';
     }
 
     // Tính toán 5 KPI Cards
@@ -4251,7 +4350,7 @@
 
     if (kpiTotalEl) kpiTotalEl.textContent = `${totalRecords} ca`;
     if (kpiRecordsSub) kpiRecordsSub.textContent = `Mỗi buổi Sáng / Trưa / Tối tính là 1 ca`;
-    if (kpiEmpEl) kpiEmpEl.textContent = `${uniqueEmpsWithOt} / ${state.employees.length} NV`;
+    if (kpiEmpEl) kpiEmpEl.textContent = `${uniqueEmpsWithOt} / ${rosterEmployees.length} NV`;
     if (kpiEmployeesSub) kpiEmployeesSub.textContent = `Số người có tăng ca / tổng số nhân viên`;
     if (kpiHoursEl) kpiHoursEl.textContent = `${formatHoursClean(totalEstHours)} giờ`;
     if (kpiHoursSub) kpiHoursSub.textContent = overrideCount > 0 ? `${overrideCount} ca Quản đốc nhập tay số giờ` : `Tự cộng từ giờ bắt đầu - kết thúc`;
@@ -4296,7 +4395,7 @@
           ? `Chỉ xuất các ca tăng ca tính công ngày ${filterDayVn}`
           : 'Xuất tất cả ca tăng ca của tháng đang chọn';
     }
-    if (s2Label) s2Label.textContent = String(state.employees.length);
+    if (s2Label) s2Label.textContent = String(rosterEmployees.length);
     if (modBadge) {
       if (modAlertCount > 0) {
         modBadge.style.display = 'inline-block';
@@ -4491,7 +4590,7 @@
     // Lọc danh sách nhân viên theo bộ lọc hiện tại
     const monthFirstIso = `${mxYear}-${pad2(mxMonth)}-01`;
     const monthLastIso = `${mxYear}-${pad2(mxMonth)}-${pad2(new Date(mxYear, mxMonth, 0).getDate())}`;
-    const filteredEmployees = state.employees.filter((emp) => {
+    const filteredEmployees = getTimesheetEmployees(matrixMonth).filter((emp) => {
       if (emp.endDate && emp.endDate < monthFirstIso) return false;
       if (emp.startDate && emp.startDate > monthLastIso) return false;
       if (onlyPending && !pendingEmpNames.has(emp.name)) return false;
@@ -5165,7 +5264,7 @@
     `;
 
     const sheet2Month = getSelectedMonthKey();
-    state.employees.forEach((emp, idx) => {
+    getTimesheetEmployees(sheet2Month).forEach((emp, idx) => {
       const r = idx + 2;
       const empRecs = state.records.filter((rec) => rec.employeeName === emp.name && isRecordInMonth(rec, sheet2Month));
       const totalHrs = Math.round(empRecs.reduce((s, rec) => s + computeEstimatedHours(rec), 0) * 100) / 100;
@@ -5287,8 +5386,8 @@
   }
 
   function openAdminEditOvertimeModal(recordId = null, prefillEmpName = null, prefillVnDate = null) {
-    if (state.employees.length === 0) {
-      showToast('Hãy thêm nhân viên trước (nút "Nhân sự & Tài khoản").', 'warn');
+    if (getTimesheetEmployees().length === 0 && !recordId && !prefillEmpName) {
+      showToast('Hãy thêm nhân viên có chấm công trước (nút "Nhân sự & Tài khoản").', 'warn');
       return;
     }
     const modal = document.getElementById('modalEditOvertime');
@@ -5310,7 +5409,12 @@
     const editingRec = recordId ? state.records.find((r) => r.id === recordId) : null;
     if (empSelect) {
       empSelect.innerHTML = state.employees
-        .filter((e) => isEmployeeCurrentlyActive(e) || (editingRec && editingRec.employeeName === e.name) || (prefillEmpName && prefillEmpName === e.name))
+        .filter(
+          (e) =>
+            (isTimesheetEmployee(e) && isEmployeeCurrentlyActive(e)) ||
+            (editingRec && editingRec.employeeName === e.name) ||
+            (prefillEmpName && prefillEmpName === e.name)
+        )
         .map((e) => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.name)}</option>`)
         .join('');
     }
@@ -5342,7 +5446,8 @@
     } else {
       const defEmp =
         (prefillEmpName && state.employees.find((e) => e.name === prefillEmpName)) ||
-        state.employees.find((e) => isEmployeeCurrentlyActive(e)) ||
+        getTimesheetEmployees().find((e) => isEmployeeCurrentlyActive(e)) ||
+        getTimesheetEmployees()[0] ||
         state.employees[0];
       if (title) title.textContent = prefillEmpName ? `Thêm Ca Tăng Ca — ${prefillEmpName} (${baseVnDate})` : 'Thêm Dòng Chi Tiết Tăng Ca Mới';
       if (idInput) idInput.value = '';
@@ -5513,88 +5618,134 @@
     document.getElementById('modalManageEmployees')?.classList.add('open');
   }
 
+  /** Tên đăng nhập là của chính người đang đăng nhập (không được đổi quyền / cho nghỉ / xóa chính mình) */
+  function isSelfAccount(emp) {
+    const own = state.authEmployeeName || state.loggedInEmployeeName || '';
+    return Boolean(own) && Boolean(emp) && emp.name === own;
+  }
+
+  /** Số Admin khác `exceptName` đang làm (chưa có ngày nghỉ): luôn phải còn ít nhất 1 */
+  function countOtherActiveAdmins(exceptName) {
+    return state.employees.filter((e) => e.name !== exceptName && e.role === 'admin' && !e.endDate).length;
+  }
+
+  /** HTML danh sách tài khoản: mỗi tài khoản một thẻ, tự xuống dòng ở màn hình hẹp. Mọi chữ từ máy chủ đều qua escapeHtml. */
+  function buildManageEmployeesHtml() {
+    const items = (state.employees || []).map((e, i) => {
+      const nameAttr = escapeHtml(e.name);
+      const isAdminRole = e.role === 'admin';
+      const isSelf = isSelfAccount(e);
+      let tgCell;
+      if (!REMOTE_MODE) {
+        tgCell = '<div class="emp-tg-cell muted">Chỉ dùng khi kết nối máy chủ</div>';
+      } else if (e.telegramLinked) {
+        tgCell = `<div class="emp-tg-cell linked">Đã kết nối: ${escapeHtml(e.telegramName || '')}</div>`;
+      } else {
+        tgCell = '<div class="emp-tg-cell muted">Chưa kết nối</div>';
+      }
+      const tgButtons =
+        REMOTE_MODE && e.telegramLinked
+          ? `<button type="button" class="action-btn btn-tg-test" data-name="${nameAttr}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Gửi thử</button>
+             <button type="button" class="action-btn btn-tg-unlink" data-name="${nameAttr}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Ngắt liên kết</button>`
+          : '';
+      const isRescue = String(e.username || '').toLowerCase() === 'admin'; // tài khoản quản trị gốc (cứu hộ)
+      const canRemove = !(e.hasRecords || state.records.some((r) => r.employeeName === e.name)) && !isAdminRole && !isSelf && !isRescue;
+      return `
+        <div class="emp-card" data-name="${nameAttr}">
+          <div class="emp-card-head">
+            <span class="emp-card-no">${i + 1}.</span>
+            <span class="emp-card-name">${escapeHtml(e.name)}</span>
+            ${isAdminRole ? '<span class="emp-role-tag">Admin</span>' : ''}
+            ${isRescue ? '<span class="emp-status-line">Tài khoản quản trị gốc</span>' : ''}
+            <span class="emp-status-line${e.endDate ? ' ended' : ''}">${
+              e.endDate
+                ? 'Nghỉ việc từ ' + escapeHtml(isoDateToVnDate(e.endDate))
+                : e.startDate
+                ? 'Vào làm ' + escapeHtml(isoDateToVnDate(e.startDate))
+                : 'Đang làm việc'
+            }</span>
+          </div>
+          <div class="emp-card-grid">
+            <label class="emp-field">Tên đăng nhập
+              <input type="text" class="form-control cell-mono emp-username-inline-input" data-name="${nameAttr}"
+                value="${escapeHtml(e.username || slugifyVietnamese(e.name))}" />
+            </label>
+            <label class="emp-field">Đặt mật khẩu mới
+              <input type="text" class="form-control cell-mono emp-password-inline-input" data-name="${nameAttr}"
+                value="${REMOTE_MODE ? '' : escapeHtml(e.password || e.pin || '123456')}"
+                placeholder="${REMOTE_MODE ? 'Mật khẩu mới' : ''}" />
+            </label>
+            <label class="emp-field">Quyền truy cập
+              <select class="form-control emp-role-select" data-name="${nameAttr}"${isSelf || isRescue ? ' disabled title="Không đổi quyền của chính mình / tài khoản quản trị gốc"' : ''}>
+                <option value="worker"${isAdminRole ? '' : ' selected'}>Công nhân</option>
+                <option value="admin"${isAdminRole ? ' selected' : ''}>Admin – Quản đốc</option>
+              </select>
+            </label>
+            <div class="emp-field">Kết nối Telegram
+              ${tgCell}
+            </div>
+            <label class="emp-check"><input type="checkbox" class="emp-has-ts"${e.hasTimesheet !== false ? ' checked' : ''} /> Có chấm công cá nhân</label>
+            <label class="emp-check${isAdminRole ? '' : ' is-disabled'}"><input type="checkbox" class="emp-notify-mgr"${
+              isAdminRole && e.notifyManager ? ' checked' : ''
+            }${isAdminRole ? '' : ' disabled'} /> Nhận báo cáo quản lý</label>
+            <label class="emp-check"><input type="checkbox" class="emp-notify-personal"${e.notifyPersonal !== false ? ' checked' : ''} /> Nhận thông báo cá nhân</label>
+          </div>
+          <div class="emp-actions">
+            <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${nameAttr}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
+              Lưu
+            </button>
+            ${tgButtons}
+            ${
+              e.endDate
+                ? `<button type="button" class="action-btn btn-rehire-emp" data-name="${nameAttr}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Đi làm lại</button>`
+                : isSelf || isRescue
+                ? ''
+                : `<button type="button" class="action-btn btn-end-emp" data-name="${nameAttr}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Cho nghỉ việc</button>`
+            }
+            ${
+              canRemove
+                ? `<button type="button" class="action-btn btn-remove-emp" data-name="${nameAttr}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Xóa</button>`
+                : ''
+            }
+          </div>
+        </div>`;
+    });
+    return `<div class="emp-list">${items.join('')}</div>`;
+  }
+
   function renderManageEmployeesList() {
     const container = document.getElementById('modalEmpListContainer');
     if (!container) return;
 
-    container.innerHTML = `
-      <table class="excel-replica-table emp-manage-table" style="font-size: 0.8rem;">
-        <thead>
-          <tr class="excel-table-header">
-            <th>#</th>
-            <th>Nhân viên</th>
-            <th>Tên đăng nhập</th>
-            <th>Đặt mật khẩu mới</th>
-            <th>Thao tác</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${state.employees
-            .map(
-              (e, i) => `
-            <tr>
-              <td style="text-align:center;">${i + 1}</td>
-              <td style="font-weight:800;">
-                ${escapeHtml(e.name)}
-                <div class="emp-status-line${e.endDate ? ' ended' : ''}">${
-                  e.endDate
-                    ? 'Nghỉ việc từ ' + escapeHtml(isoDateToVnDate(e.endDate))
-                    : e.startDate
-                    ? 'Vào làm ' + escapeHtml(isoDateToVnDate(e.startDate))
-                    : 'Đang làm việc'
-                }</div>
-              </td>
-              <td style="text-align:center;">
-                <input
-                  type="text"
-                  class="form-control cell-mono emp-username-inline-input"
-                  data-name="${escapeHtml(e.name)}"
-                  value="${escapeHtml(e.username || slugifyVietnamese(e.name))}"
-                  style="width:110px;padding:0.25rem 0.45rem;text-align:center;margin:0 auto;font-size:0.82rem;"
-                />
-              </td>
-              <td style="text-align:center;">
-                <input
-                  type="text"
-                  class="form-control cell-mono emp-password-inline-input"
-                  data-name="${escapeHtml(e.name)}"
-                  value="${REMOTE_MODE ? '' : escapeHtml(e.password || e.pin || '123456')}"
-                  placeholder="${REMOTE_MODE ? 'Mật khẩu mới' : ''}"
-                  style="width:${REMOTE_MODE ? '118' : '96'}px;padding:0.25rem 0.45rem;text-align:center;margin:0 auto;font-size:0.82rem;"
-                />
-              </td>
-              <td style="text-align:center;"><div class="emp-actions">
-                <button type="button" class="action-btn primary btn-save-emp-cred" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.55rem;font-size:0.72rem;">
-                  Lưu
-                </button>
-                ${
-                  e.endDate
-                    ? `<button type="button" class="action-btn btn-rehire-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;">Đi làm lại</button>`
-                    : `<button type="button" class="action-btn btn-end-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Cho nghỉ việc</button>`
-                }
-                ${
-                  e.hasRecords || state.records.some((r) => r.employeeName === e.name)
-                    ? ''
-                    : `<button type="button" class="action-btn btn-remove-emp" data-name="${escapeHtml(e.name)}" style="padding:0.22rem 0.5rem;font-size:0.72rem;color:var(--rose);">Xóa</button>`
-                }
-              </div></td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-    `;
+    container.innerHTML = buildManageEmployeesHtml();
+
+    // Đổi quyền sang Công nhân thì tắt ô "Nhận báo cáo quản lý" (công nhân không nhận báo cáo quản lý)
+    container.querySelectorAll('.emp-role-select').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const card = sel.closest('.emp-card');
+        const mgr = card && card.querySelector('.emp-notify-mgr');
+        if (!mgr) return;
+        const isAdminNow = sel.value === 'admin';
+        mgr.disabled = !isAdminNow;
+        if (!isAdminNow) mgr.checked = false;
+        mgr.closest('.emp-check')?.classList.toggle('is-disabled', !isAdminNow);
+      });
+    });
 
     container.querySelectorAll('.btn-save-emp-cred').forEach((btn) => {
       btn.addEventListener('click', () => {
         const target = btn.getAttribute('data-name');
-        const userEl = container.querySelector(`.emp-username-inline-input[data-name="${CSS.escape(target)}"]`);
-        const passEl = container.querySelector(`.emp-password-inline-input[data-name="${CSS.escape(target)}"]`);
+        const card = btn.closest('.emp-card');
+        const userEl = card && card.querySelector('.emp-username-inline-input');
+        const passEl = card && card.querySelector('.emp-password-inline-input');
         const newUsername = slugifyVietnamese(userEl?.value || '');
         const newPassword = (passEl?.value || '').trim();
+        const empObj = state.employees.find((e) => e.name === target);
+        if (!empObj) return;
 
-        if (!newUsername || newUsername === 'admin' || newUsername === 'quantri') {
+        // Chỉ chặn khi ĐẶT tên đăng nhập mới là admin / quantri; dòng đang là 'admin' giữ nguyên thì lưu được
+        const reserved = newUsername === 'admin' || newUsername === 'quantri';
+        if (!newUsername || (reserved && newUsername !== String(empObj.username || '').toLowerCase())) {
           playFeedbackSound('ERROR');
           showToast('Tên đăng nhập không hợp lệ (không được để trống hoặc trùng tên admin).', 'error');
           return;
@@ -5613,27 +5764,47 @@
           return;
         }
 
-        const empObj = state.employees.find((e) => e.name === target);
-        if (empObj) {
-          empObj.username = newUsername;
-          if (newPassword) {
-            empObj.password = newPassword;
-            empObj.pin = newPassword;
-          }
-          if (userEl) userEl.value = newUsername;
-          if (passEl && REMOTE_MODE) passEl.value = '';
-          saveLocalState(true);
-          syncWithCentralServer(true);
-          playFeedbackSound('SUCCESS');
-          renderAll();
-          showToast(
-            newPassword && !REMOTE_MODE
-              ? `Đã lưu tài khoản (${escapeHtml(newUsername)} / ${escapeHtml(newPassword)}) cho ${escapeHtml(target)}.`
-              : `Đã lưu tài khoản ${escapeHtml(newUsername)} cho ${escapeHtml(target)}${newPassword ? ' (đã đặt mật khẩu mới, nhân viên sẽ được nhắc đổi khi đăng nhập)' : ''}.`,
-            'success'
-          );
+        const isSelf = isSelfAccount(empObj);
+        const roleSel = card.querySelector('.emp-role-select');
+        const isRescueRow = String(empObj.username || '').toLowerCase() === 'admin';
+        const newRole = isSelf || isRescueRow ? empObj.role || 'worker' : roleSel && roleSel.value === 'admin' ? 'admin' : 'worker';
+        if (REMOTE_MODE && empObj.role === 'admin' && newRole !== 'admin' && countOtherActiveAdmins(target) === 0) {
+          playFeedbackSound('ERROR');
+          showToast('Phải còn ít nhất 1 tài khoản Admin đang làm việc.', 'error');
+          return;
         }
+
+        empObj.username = newUsername;
+        if (newPassword) {
+          empObj.password = newPassword;
+          empObj.pin = newPassword;
+        }
+        empObj.role = newRole;
+        empObj.hasTimesheet = Boolean(card.querySelector('.emp-has-ts')?.checked);
+        empObj.notifyManager = newRole === 'admin' && Boolean(card.querySelector('.emp-notify-mgr')?.checked);
+        empObj.notifyPersonal = Boolean(card.querySelector('.emp-notify-personal')?.checked);
+        if (isSelf) state.authHasTimesheet = empObj.hasTimesheet;
+        if (userEl) userEl.value = newUsername;
+        if (passEl && REMOTE_MODE) passEl.value = '';
+        saveLocalState(true);
+        syncWithCentralServer(true);
+        playFeedbackSound('SUCCESS');
+        renderManageEmployeesList();
+        renderAll();
+        showToast(
+          newPassword && !REMOTE_MODE
+            ? `Đã lưu tài khoản (${escapeHtml(newUsername)} / ${escapeHtml(newPassword)}) cho ${escapeHtml(target)}.`
+            : `Đã lưu tài khoản ${escapeHtml(newUsername)} cho ${escapeHtml(target)}${newPassword ? ' (đã đặt mật khẩu mới, nhân viên sẽ được nhắc đổi khi đăng nhập)' : ''}.`,
+          'success'
+        );
       });
+    });
+
+    container.querySelectorAll('.btn-tg-test').forEach((btn) => {
+      btn.addEventListener('click', () => telegramRowAction('test', btn.getAttribute('data-name'), btn));
+    });
+    container.querySelectorAll('.btn-tg-unlink').forEach((btn) => {
+      btn.addEventListener('click', () => telegramRowAction('unlink', btn.getAttribute('data-name'), btn));
     });
 
     container.querySelectorAll('.btn-end-emp').forEach((btn) => {
@@ -5641,6 +5812,18 @@
         const target = btn.getAttribute('data-name');
         const emp = state.employees.find((x) => x.name === target);
         if (!emp) return;
+        if (isSelfAccount(emp)) {
+          showToast('Không thể tự cho mình nghỉ việc.', 'error');
+          return;
+        }
+        if (String(emp.username || '').toLowerCase() === 'admin') {
+          showToast('Không thể cho tài khoản quản trị gốc (admin) nghỉ việc.', 'error');
+          return;
+        }
+        if (REMOTE_MODE && emp.role === 'admin' && countOtherActiveAdmins(target) === 0) {
+          showToast('Phải còn ít nhất 1 tài khoản Admin đang làm việc.', 'error');
+          return;
+        }
         const input = window.prompt(
           `Ngày làm việc cuối cùng của ${target} (dd/mm/yyyy).\nTừ sau ngày này tài khoản sẽ bị khóa, dữ liệu cũ vẫn được giữ.`,
           isoDateToVnDate(localIsoToday())
@@ -5682,7 +5865,7 @@
         }
         state.employees = state.employees.filter((e) => e.name !== target);
         if (state.selectedEmployeeName === target) {
-          state.selectedEmployeeName = state.employees[0].name;
+          state.selectedEmployeeName = (getTimesheetEmployees()[0] || state.employees[0]).name;
           syncWorkerDefaultsFromSelectedEmp();
         }
         saveLocalState(true);
@@ -5745,7 +5928,11 @@
       password: finalPassword,
       pin: finalPassword,
       defaultOvertimeType: defType,
-      defaultWorkMode: defMode
+      defaultWorkMode: defMode,
+      role: 'worker',
+      hasTimesheet: true,
+      notifyManager: false,
+      notifyPersonal: true
     });
 
     if (nameInput) nameInput.value = '';
@@ -5798,7 +5985,7 @@
         roleBadge.className = 'user-role-tag';
       }
       if (userNameEl) {
-        userNameEl.textContent = state.loggedInEmployeeName || state.selectedEmployeeName;
+        userNameEl.textContent = personalName();
       }
     } else if (state.authRole === 'ADMIN') {
       if (roleBadge) {
@@ -5806,12 +5993,40 @@
         roleBadge.className = 'user-role-tag admin';
       }
       if (userNameEl) {
-        userNameEl.textContent = 'Admin';
+        userNameEl.textContent = state.authEmployeeName || 'Admin';
       }
     }
   }
 
+  /** Nút chuyển "Báo công của tôi" / "Quản lý phân xưởng" và nút Kết nối Telegram theo người đang đăng nhập */
+  function updateViewSwitchUI() {
+    const bar = document.getElementById('viewSwitchBar');
+    const can = canSwitchView();
+    if (bar) bar.style.display = can ? 'flex' : 'none';
+    const personal = state.activeMainTab === 'WORKER_MOBILE';
+    document.getElementById('btnViewPersonal')?.classList.toggle('active', can && personal);
+    document.getElementById('btnViewManage')?.classList.toggle('active', can && !personal);
+    updateTelegramButtons();
+  }
+
+  function switchMainView(view) {
+    if (!canSwitchView()) return;
+    if (view === 'PERSONAL') {
+      if (state.activeMainTab !== 'WORKER_MOBILE') {
+        state.activeMainTab = 'WORKER_MOBILE';
+        state.workerMobileSubTab = 'FORM';
+        state.selectedEmployeeName = state.authEmployeeName;
+        syncWorkerDefaultsFromSelectedEmp();
+        resetWorkerForm();
+      }
+    } else {
+      state.activeMainTab = 'ADMIN_EXCEL';
+    }
+    renderAll();
+  }
+
   function renderAll() {
+    syncAuthFromEmployees();
     if (!state.authRole) {
       state.activeMainTab = 'LOGIN';
     } else if (state.authRole === 'WORKER') {
@@ -5819,6 +6034,9 @@
       if (state.loggedInEmployeeName) {
         state.selectedEmployeeName = state.loggedInEmployeeName;
       }
+    } else if (state.authRole === 'ADMIN') {
+      // Admin có chấm công cá nhân được ở cả 2 màn hình; không có thì luôn ở trang Quản đốc
+      if (!(state.activeMainTab === 'WORKER_MOBILE' && canSwitchView())) state.activeMainTab = 'ADMIN_EXCEL';
     }
 
     const vLogin = document.getElementById('viewLoginScreen');
@@ -5830,6 +6048,7 @@
     if (vAdmin) vAdmin.classList.toggle('active', state.activeMainTab === 'ADMIN_EXCEL');
 
     updateHeaderSessionBar();
+    updateViewSwitchUI();
     updateSyncStatusUI(true);
     renderLoginView();
     renderWorkerMobileView();
@@ -6104,10 +6323,7 @@
     document.getElementById('mobileWorkDate')?.addEventListener('change', (e) => {
       if (!e.target.value) e.target.value = localIsoToday(); // bấm "Xóa" trong bảng chọn ngày thì quay về hôm nay
       const isoDate = e.target.value;
-      const activeWorkerName =
-        state.authRole === 'WORKER' && state.loggedInEmployeeName
-          ? state.loggedInEmployeeName
-          : state.selectedEmployeeName;
+      const activeWorkerName = personalName();
       const vnDate = isoDateToVnDate(isoDate);
       const existingDay = getEmployeeDaySummary(activeWorkerName, vnDate);
       const hasExisting = existingDay.records.length > 0 || existingDay.hasStatus;
@@ -6677,6 +6893,7 @@
     remoteClearData();
     state.authRole = null;
     state.loggedInEmployeeName = null;
+    clearAuthIdentity();
     state.adminUnlocked = false;
     state.activeMainTab = 'LOGIN';
     setAppLoading(false);
@@ -6692,6 +6909,8 @@
   }
 
   function mapServerEmployee(e) {
+    // Máy chủ cũ chưa có các trường quyền / Telegram: dùng mặc định (công nhân, có chấm công)
+    const role = e.role === 'admin' ? 'admin' : 'worker';
     return {
       name: e.name,
       username: e.username,
@@ -6700,8 +6919,38 @@
       startDate: e.startDate || null,
       endDate: e.endDate || null,
       hasRecords: Boolean(e.hasRecords),
-      mustChangePassword: Boolean(e.mustChangePassword)
+      mustChangePassword: Boolean(e.mustChangePassword),
+      role,
+      hasTimesheet: e.hasTimesheet !== false,
+      notifyManager: e.notifyManager === true,
+      notifyPersonal: e.notifyPersonal !== false,
+      telegramLinked: e.telegramLinked === true,
+      telegramName: e.telegramLinked === true && e.telegramName ? String(e.telegramName) : null,
+      telegramLinkedAt: e.telegramLinkedAt || null
     };
+  }
+
+  /** Gộp ca theo id (máy chủ có thể trả thêm ca cá nhân của Admin ngoài cửa sổ tháng): không để trùng */
+  function dedupeRecordsById(list) {
+    const seen = new Set();
+    return list.filter((r) => {
+      if (!r || !r.id || seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+  }
+
+  /** Cờ chấm công + trạng thái Telegram của chính mình, lấy từ `me` của app_pull (máy chủ cũ: từ dòng của mình) */
+  function applyServerMe(d) {
+    const me = d && d.me && typeof d.me === 'object' ? d.me : null;
+    const own = state.employees.find((e) => e.name === (me ? me.name : state.authEmployeeName)) || null;
+    if (me) {
+      state.authHasTimesheet = state.authRole === 'ADMIN' ? me.hasTimesheet === true : me.hasTimesheet !== false;
+      state.authTelegram = { linked: me.telegramLinked === true, telegramName: me.telegramLinked === true ? String(me.telegramName || '') : '' };
+    } else if (own && own.role !== undefined) {
+      state.authHasTimesheet = state.authRole === 'ADMIN' ? own.hasTimesheet === true && own.role === 'admin' : own.hasTimesheet !== false;
+      state.authTelegram = { linked: own.telegramLinked === true, telegramName: own.telegramName || '' };
+    }
   }
 
   // ---- Tải dữ liệu từ máy chủ ----
@@ -6738,13 +6987,13 @@
     // Máy chủ chưa chạy lại supabase_setup.sql bản mới thì chưa có Nghỉ / Về sớm: không cho lưu để khỏi mất dữ liệu
     remote.supportsDayStatus = Object.prototype.hasOwnProperty.call(d, 'dayStatuses');
     remote.supportsRestHours = d.supportsRestHours === true;
-    const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts, d.dayStatuses]);
+    const sig = JSON.stringify([d.employees, d.records, d.holidays, d.lockedDays, d.dayModAlerts, d.dayStatuses, d.me]);
     if (!opts.force && remote.snapshot && sig === remote.lastSig) {
       return { ok: true, changed: false, data: d };
     }
     remote.lastSig = sig;
     state.employees = (d.employees || []).map(mapServerEmployee);
-    state.records = (d.records || []).filter((r) => !r.isDriverNoTime);
+    state.records = dedupeRecordsById((d.records || []).filter((r) => !r.isDriverNoTime));
     state.holidays = d.holidays || {};
     state.lockedDays = d.lockedDays || {};
     Object.keys(state.lockedDays).forEach((k) => {
@@ -6753,6 +7002,7 @@
     state.dayModAlerts = d.dayModAlerts || {};
     state.dayStatuses = d.dayStatuses || {};
     state.offlineQueue = [];
+    applyServerMe(d);
     remote.snapshot = window.OTRemote.snapshotFromState(state, state.authRole);
     return { ok: true, changed: true, data: d };
   }
@@ -6961,6 +7211,9 @@
       remote.lastSig = '';
       state.authRole = d.role === 'admin' ? 'ADMIN' : 'WORKER';
       state.loggedInEmployeeName = d.role === 'admin' ? null : d.name;
+      state.authEmployeeName = d.name || null;
+      state.authHasTimesheet = d.role === 'admin' ? d.hasTimesheet === true : d.hasTimesheet !== false;
+      state.authTelegram = null;
       if (d.role !== 'admin') state.selectedEmployeeName = d.name;
       state.adminUnlocked = d.role === 'admin';
 
@@ -6972,6 +7225,7 @@
         remoteClearData();
         state.authRole = null;
         state.loggedInEmployeeName = null;
+        clearAuthIdentity();
         state.adminUnlocked = false;
         showErr(loaded.message || 'Không tải được dữ liệu. Vui lòng thử lại.');
         return;
@@ -7014,6 +7268,9 @@
     remote.name = saved.name || '';
     state.authRole = saved.role === 'admin' ? 'ADMIN' : 'WORKER';
     state.loggedInEmployeeName = saved.role === 'admin' ? null : remote.name;
+    state.authEmployeeName = remote.name || null;
+    state.authHasTimesheet = saved.role !== 'admin'; // Admin: lấy theo `me` của app_pull ngay sau đây
+    state.authTelegram = null;
     if (saved.role !== 'admin') state.selectedEmployeeName = remote.name;
     state.adminUnlocked = saved.role === 'admin';
 
@@ -7027,6 +7284,7 @@
         remote.token = '';
         state.authRole = null;
         state.loggedInEmployeeName = null;
+        clearAuthIdentity();
         state.adminUnlocked = false;
         renderAll();
         showToast(escapeHtml(loaded.message || 'Không kết nối được máy chủ. Hãy kiểm tra mạng rồi tải lại trang.'), 'warn');
@@ -7053,6 +7311,273 @@
     remoteClearSession();
     remoteClearData();
     if (token) remoteClient.rpc('app_logout', { p_token: token });
+  }
+
+  // ==========================================================================
+  // KẾT NỐI TELEGRAM (chỉ chế độ máy chủ)
+  //  - Mỗi tài khoản tự bấm Start trong Telegram để gắn chat của mình, không cần gõ Chat ID
+  //  - Tên Telegram và mọi chữ từ máy chủ là dữ liệu không tin cậy: luôn qua escapeHtml / textContent
+  // ==========================================================================
+
+  const TG_POLL_MS = 3000;
+  const TG_LINK_MAX_MS = 15 * 60 * 1000;
+  const tgLink = { gen: 0, timer: null, deadline: 0 };
+
+  function updateTelegramButtons() {
+    const show = REMOTE_MODE && Boolean(state.authRole) && Boolean(remote.token);
+    const tg = state.authTelegram;
+    ['btnWorkerTelegram', 'btnAdminTelegram'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.style.display = show ? '' : 'none';
+      el.textContent = tg && tg.linked ? 'Telegram: Đã kết nối' : 'Kết nối Telegram';
+      el.title = tg && tg.linked ? `Đã kết nối: ${tg.telegramName || ''}` : 'Nhận nhắc việc và báo cáo qua Telegram';
+    });
+  }
+
+  function tgErrorText(res) {
+    return (res && (res.message || (res.data && res.data.message))) || 'Chưa thực hiện được, vui lòng thử lại.';
+  }
+
+  function setOwnTelegram(linked, name, linkedAt) {
+    state.authTelegram = { linked: Boolean(linked), telegramName: linked ? String(name || '') : '' };
+    const me = state.employees.find((e) => e.name === state.authEmployeeName);
+    if (me) {
+      me.telegramLinked = Boolean(linked);
+      me.telegramName = linked ? String(name || '') : null;
+      me.telegramLinkedAt = linked ? linkedAt || null : null;
+    }
+    updateTelegramButtons();
+  }
+
+  function tgStopPolling() {
+    tgLink.gen += 1;
+    if (tgLink.timer) clearTimeout(tgLink.timer);
+    tgLink.timer = null;
+  }
+
+  function closeTelegramDialog() {
+    tgStopPolling();
+    document.getElementById('modalTelegramLink')?.classList.remove('open');
+  }
+
+  function tgDialogIsOpen() {
+    const modal = document.getElementById('modalTelegramLink');
+    return Boolean(modal) && modal.classList.contains('open');
+  }
+
+  function tgShowError(msg) {
+    const el = document.getElementById('tgLinkError');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  function tgSetFooter(opts) {
+    const set = (id, on) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = on ? '' : 'none';
+    };
+    set('btnTgLinkTest', Boolean(opts.test));
+    set('btnTgLinkUnlink', Boolean(opts.unlink));
+    set('btnTgLinkRestart', Boolean(opts.restart));
+  }
+
+  /** Đã kết nối: hiện tên Telegram + Gửi thử / Ngắt liên kết / Kết nối lại */
+  function tgShowLinked() {
+    tgStopPolling();
+    const box = document.getElementById('tgLinkCurrent');
+    const tg = state.authTelegram || {};
+    if (box) {
+      box.className = 'tg-status-box linked';
+      box.innerHTML = `✅ Đã kết nối: ${escapeHtml(tg.telegramName || '')}`;
+    }
+    const flow = document.getElementById('tgLinkFlow');
+    if (flow) flow.style.display = 'none';
+    tgSetFooter({ test: true, unlink: true, restart: true });
+  }
+
+  function tgShowUnlinked() {
+    tgStopPolling();
+    const box = document.getElementById('tgLinkCurrent');
+    if (box) {
+      box.className = 'tg-status-box';
+      box.textContent = 'Chưa kết nối Telegram.';
+    }
+    const flow = document.getElementById('tgLinkFlow');
+    if (flow) flow.style.display = 'none';
+    tgSetFooter({ restart: true });
+  }
+
+  function tgScheduleTick(gen) {
+    if (tgLink.timer) clearTimeout(tgLink.timer);
+    tgLink.timer = setTimeout(() => tgPollTick(gen), TG_POLL_MS);
+  }
+
+  async function tgPollTick(gen) {
+    if (gen !== tgLink.gen) return;
+    if (!tgDialogIsOpen() || !remote.token) {
+      tgStopPolling();
+      return;
+    }
+    const waiting = document.getElementById('tgLinkWaiting');
+    if (Date.now() > tgLink.deadline) {
+      if (waiting) {
+        waiting.className = 'tg-waiting';
+        waiting.textContent = 'Hết thời gian chờ. Bấm "Kết nối lại" để tạo liên kết mới.';
+      }
+      tgSetFooter({ restart: true });
+      tgStopPolling();
+      return;
+    }
+    const res = await remoteClient.telegramLinkStatus(remote.token);
+    if (gen !== tgLink.gen) return;
+    if (!res.ok) {
+      if (res.hint === 'unauthorized' || res.hint === 'inactive') {
+        tgStopPolling();
+        remoteForceLogout(res.message);
+        return;
+      }
+      if (!window.OTRemote.isRetryable(res)) {
+        // Lỗi thật (VD máy chủ chưa cài bot): dừng chờ và báo rõ
+        tgShowError(tgErrorText(res));
+        tgSetFooter({ restart: true });
+        tgStopPolling();
+        return;
+      }
+    } else if (res.data && res.data.ok === false) {
+      tgShowError(tgErrorText(res));
+    } else if (res.data && res.data.linked && !res.data.pending) {
+      // Đang kết nối lại: linked + pending nghĩa là vẫn là liên kết cũ, chưa bấm Start
+      onTelegramLinked(res.data);
+      return;
+    } else {
+      tgShowError(res.data && res.data.pollError ? `Bot Telegram báo lỗi: ${res.data.pollError}` : '');
+    }
+    tgScheduleTick(gen);
+  }
+
+  function onTelegramLinked(d) {
+    tgStopPolling();
+    setOwnTelegram(true, d.telegramName, d.linkedAt);
+    tgShowError('');
+    tgShowLinked();
+    playFeedbackSound('SUCCESS');
+    showToast(`Đã kết nối Telegram: <strong>${escapeHtml(d.telegramName || '')}</strong>`, 'success');
+    remoteSyncPull({ force: true });
+  }
+
+  /** Tạo liên kết mới và bắt đầu chờ người dùng bấm Start (hỏi trạng thái mỗi 3 giây, tối đa 15 phút) */
+  async function startTelegramLink() {
+    if (!REMOTE_MODE || !remote.token) return;
+    tgStopPolling();
+    const gen = tgLink.gen;
+    tgShowError('');
+    tgSetFooter({});
+    const box = document.getElementById('tgLinkCurrent');
+    if (box) {
+      box.className = 'tg-status-box';
+      box.textContent = 'Đang tạo liên kết...';
+    }
+    const flow = document.getElementById('tgLinkFlow');
+    if (flow) flow.style.display = 'none';
+
+    const res = await remoteClient.telegramLinkStart(remote.token);
+    if (gen !== tgLink.gen || !tgDialogIsOpen()) return;
+    const d = res.ok ? res.data || {} : {};
+    if (!res.ok || d.ok === false || !d.url) {
+      if (res.hint === 'unauthorized' || res.hint === 'inactive') {
+        remoteForceLogout(res.message);
+        return;
+      }
+      if (box) box.textContent = 'Chưa tạo được liên kết Telegram.';
+      tgShowError(tgErrorText(res.ok && !d.url && d.ok !== false ? { message: 'Máy chủ không trả về liên kết Telegram.' } : res));
+      tgSetFooter({ restart: true });
+      return;
+    }
+    // Chỉ mở liên kết https của Telegram
+    const url = String(d.url);
+    if (!/^https:\/\/(t\.me|telegram\.me)\//i.test(url)) {
+      if (box) box.textContent = 'Chưa tạo được liên kết Telegram.';
+      tgShowError('Liên kết Telegram không hợp lệ.');
+      tgSetFooter({ restart: true });
+      return;
+    }
+    if (box) {
+      box.className = 'tg-status-box';
+      box.textContent = 'Chưa kết nối Telegram.';
+    }
+    const link = document.getElementById('tgLinkOpenBtn');
+    if (link) {
+      link.href = url;
+      link.textContent = d.botUsername ? `Mở Telegram (@${String(d.botUsername).replace(/^@/, '')})` : 'Mở Telegram';
+    }
+    const waiting = document.getElementById('tgLinkWaiting');
+    if (waiting) {
+      waiting.className = 'tg-waiting';
+      waiting.textContent = 'Đang chờ bạn bấm Start…';
+    }
+    if (flow) flow.style.display = 'block';
+    tgSetFooter({});
+    tgLink.deadline = Date.now() + TG_LINK_MAX_MS;
+    tgScheduleTick(gen);
+  }
+
+  function openTelegramDialog() {
+    if (!REMOTE_MODE || !remote.token) return;
+    const modal = document.getElementById('modalTelegramLink');
+    if (!modal) return;
+    tgShowError('');
+    modal.classList.add('open');
+    if (state.authTelegram && state.authTelegram.linked) tgShowLinked();
+    else startTelegramLink();
+  }
+
+  /** Gửi thử / ngắt liên kết: người dùng tự thao tác (name = null) hoặc Admin thao tác cho người khác trong danh sách */
+  async function telegramRowAction(kind, name, btn) {
+    if (!REMOTE_MODE || !remote.token) return;
+    if (kind === 'unlink' && !window.confirm(`Ngắt liên kết Telegram của ${name || 'tài khoản này'}?`)) return;
+    if (btn) btn.disabled = true;
+    try {
+      const res =
+        kind === 'test'
+          ? await remoteClient.telegramTest(remote.token, name)
+          : await remoteClient.telegramUnlink(remote.token, name);
+      if (!res.ok || (res.data && res.data.ok === false)) {
+        if (res.hint === 'unauthorized' || res.hint === 'inactive') {
+          remoteForceLogout(res.message);
+          return;
+        }
+        playFeedbackSound('ERROR');
+        showToast(escapeHtml(tgErrorText(res)), 'error');
+        return;
+      }
+      if (kind === 'test') {
+        showToast('Đã gửi tin thử qua Telegram. Hãy kiểm tra điện thoại.', 'success');
+        return;
+      }
+      showToast(`Đã ngắt liên kết Telegram của ${escapeHtml(name || 'bạn')}.`, 'warn');
+      if (name === null || name === state.authEmployeeName) setOwnTelegram(false);
+      await remoteSyncPull({ force: true });
+      if (document.getElementById('modalManageEmployees')?.classList.contains('open')) renderManageEmployeesList();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function bindTelegramEvents() {
+    document.getElementById('btnWorkerTelegram')?.addEventListener('click', openTelegramDialog);
+    document.getElementById('btnAdminTelegram')?.addEventListener('click', openTelegramDialog);
+    document.getElementById('btnCloseTgLinkModal')?.addEventListener('click', closeTelegramDialog);
+    document.getElementById('btnTgLinkDone')?.addEventListener('click', closeTelegramDialog);
+    document.getElementById('btnTgLinkRestart')?.addEventListener('click', startTelegramLink);
+    document.getElementById('btnTgLinkTest')?.addEventListener('click', (ev) => telegramRowAction('test', null, ev.currentTarget));
+    document.getElementById('btnTgLinkUnlink')?.addEventListener('click', async (ev) => {
+      await telegramRowAction('unlink', null, ev.currentTarget);
+      if (tgDialogIsOpen() && !(state.authTelegram && state.authTelegram.linked)) tgShowUnlinked();
+    });
+    document.getElementById('btnViewPersonal')?.addEventListener('click', () => switchMainView('PERSONAL'));
+    document.getElementById('btnViewManage')?.addEventListener('click', () => switchMainView('MANAGE'));
   }
 
   // ---- Đổi mật khẩu (dùng chung cho công nhân và quản trị viên) ----
@@ -7113,7 +7638,8 @@
         });
         if (!res.ok) return showErr(res.message);
         if (!res.data || !res.data.ok) return showErr((res.data && res.data.message) || 'Chưa đổi được mật khẩu.');
-      } else if (state.authRole === 'ADMIN') {
+      } else if (state.authRole === 'ADMIN' && !state.authEmployeeName) {
+        // Admin hằng của chế độ thử (admin / admin123); Admin là nhân viên thì đổi mật khẩu nhân viên ở nhánh dưới
         if (!isAdminPassword(oldPwd)) return showErr('Mật khẩu hiện tại chưa đúng.');
         try {
           localStorage.setItem(ADMIN_PWD_KEY, computeSaltedTokenDigest(newPwd));
@@ -7121,7 +7647,7 @@
           return showErr('Không lưu được mật khẩu mới trên máy này.');
         }
       } else {
-        const emp = state.employees.find((e) => e.name === (state.loggedInEmployeeName || state.selectedEmployeeName));
+        const emp = state.employees.find((e) => e.name === (state.authEmployeeName || state.loggedInEmployeeName || state.selectedEmployeeName));
         if (!emp) return showErr('Không tìm thấy tài khoản.');
         if (oldPwd !== String(emp.password || emp.pin || '')) return showErr('Mật khẩu hiện tại chưa đúng.');
         emp.password = newPwd;
@@ -7147,6 +7673,7 @@
       });
     });
     document.getElementById('btnWorkerChangePwd')?.addEventListener('click', () => openChangePasswordModal());
+    bindTelegramEvents();
   }
 
   /** Sao lưu khi dùng Supabase: tải 400 ngày gần nhất từ máy chủ (không gồm mật khẩu). */
@@ -7203,7 +7730,11 @@
         defaultOvertimeType: e.defaultOvertimeType || 'Ngoài khoán',
         defaultWorkMode: e.defaultWorkMode || 'Tăng ca tại công ty',
         startDate: e.startDate || null,
-        endDate: e.endDate || null
+        endDate: e.endDate || null,
+        role: 'worker',
+        hasTimesheet: e.hasTimesheet !== false,
+        notifyManager: false,
+        notifyPersonal: true
       });
       have.add(e.name);
       addedEmp += 1;

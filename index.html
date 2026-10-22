@@ -48,6 +48,14 @@
     </div>
   </header>
 
+  <!-- Quản đốc có chấm công cá nhân: chuyển qua lại giữa báo công của mình và quản lý phân xưởng -->
+  <div id="viewSwitchBar" class="view-switch-bar" style="display: none;">
+    <div class="view-switch" role="group" aria-label="Chuyển chế độ xem">
+      <button type="button" id="btnViewPersonal" class="view-switch-btn">Báo công của tôi</button>
+      <button type="button" id="btnViewManage" class="view-switch-btn">Quản lý phân xưởng</button>
+    </div>
+  </div>
+
   <!-- ========================================================================
        KHUNG NỘI DUNG CHÍNH
        ======================================================================== -->
@@ -124,6 +132,9 @@
             </div>
             <div class="worker-user-actions">
               <span id="phoneNetBadge" class="phone-network-badge" style="display: none;">Trực tuyến</span>
+              <button type="button" id="btnWorkerTelegram" class="btn-worker-logout" style="display: none;">
+                Kết nối Telegram
+              </button>
               <button type="button" id="btnWorkerChangePwd" class="btn-worker-logout">
                 Đổi mật khẩu
               </button>
@@ -173,6 +184,9 @@
         <!-- ==================================================================
              TAB 1: FORM BÁO TĂNG CA THEO NGÀY (SÁNG • TRƯA • TỐI)
              ================================================================== -->
+        <div id="noTimesheetBanner" class="login-error-box" style="display: none; margin-bottom: 0.75rem;">
+          Tài khoản này không chấm công cá nhân — liên hệ Quản đốc nếu cần báo công.
+        </div>
         <div id="workerSubViewForm" class="worker-subview active">
           <div class="mobile-form-card">
 
@@ -658,6 +672,9 @@
               <button type="button" id="btnOpenManageEmployees" class="action-btn">
                 Nhân sự &amp; Tài khoản
               </button>
+              <button type="button" id="btnAdminTelegram" class="action-btn" style="display: none;" title="Nhận nhắc việc và báo cáo qua Telegram">
+                Kết nối Telegram
+              </button>
               <details class="admin-more-menu">
                 <summary class="action-btn" title="Lịch nghỉ lễ, tải lại, sao lưu, nhập file, đổi mật khẩu Admin">Khác &#9662;</summary>
                 <div class="admin-more-dropdown">
@@ -1130,6 +1147,37 @@
       </div>
       <div class="modal-footer">
         <button type="button" id="btnDoneManageEmp" class="action-btn primary">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL KẾT NỐI TELEGRAM CHO TÀI KHOẢN ĐANG ĐĂNG NHẬP
+       ======================================================================== -->
+  <div id="modalTelegramLink" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="tgLinkTitle">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="tgLinkTitle">Kết nối Telegram</h3>
+        <button type="button" id="btnCloseTgLinkModal" class="modal-close-btn" aria-label="Đóng">Đóng</button>
+      </div>
+      <div class="modal-body">
+        <div id="tgLinkCurrent" class="tg-status-box"></div>
+        <div id="tgLinkFlow" style="display: none;">
+          <a id="tgLinkOpenBtn" class="btn-giant-submit-ot tg-open-btn" href="#" target="_blank" rel="noopener">Mở Telegram</a>
+          <ol class="tg-steps">
+            <li>Bấm nút trên để mở Telegram.</li>
+            <li>Trong Telegram bấm <strong>Start</strong> (Bắt đầu).</li>
+            <li>Quay lại đây, trang sẽ tự báo "Đã kết nối".</li>
+          </ol>
+          <div id="tgLinkWaiting" class="tg-waiting"></div>
+        </div>
+        <div id="tgLinkError" class="login-error-box" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btnTgLinkTest" class="action-btn" style="display: none;">Gửi thử</button>
+        <button type="button" id="btnTgLinkUnlink" class="action-btn" style="display: none; color: var(--rose);">Ngắt liên kết</button>
+        <button type="button" id="btnTgLinkRestart" class="action-btn" style="display: none;">Kết nối lại</button>
+        <button type="button" id="btnTgLinkDone" class="action-btn primary">Đóng</button>
       </div>
     </div>
   </div>

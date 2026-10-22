@@ -62,8 +62,31 @@
       };
     }
 
-    return { rpc, url };
+    /**
+     * Gọi hàm Telegram (app_telegram_*). Máy chủ chưa chạy telegram_nhac_cham_cong.sql thì hàm không tồn tại:
+     * báo rõ nguyên nhân thay vì câu "chưa cài cơ sở dữ liệu" chung chung.
+     */
+    async function telegramRpc(fn, args) {
+      const res = await rpc(fn, args);
+      if (!res.ok && (res.code === 'PGRST202' || res.code === '42883' || res.status === 404)) {
+        res.message = TELEGRAM_MISSING_MESSAGE;
+        res.telegramMissing = true;
+      }
+      return res;
+    }
+
+    return {
+      rpc,
+      url,
+      telegramLinkStart: (token) => telegramRpc('app_telegram_link_start', { p_token: token }),
+      telegramLinkStatus: (token) => telegramRpc('app_telegram_link_status', { p_token: token }),
+      telegramUnlink: (token, name) => telegramRpc('app_telegram_unlink', { p_token: token, p_name: name || null }),
+      telegramTest: (token, name) => telegramRpc('app_telegram_test', { p_token: token, p_name: name || null })
+    };
   }
+
+  const TELEGRAM_MISSING_MESSAGE =
+    'Máy chủ chưa cài bot Telegram (Quản trị viên cần chạy telegram_nhac_cham_cong.sql)';
 
   function isRetryable(res) {
     return Boolean(res && (res.network || res.retryable));
@@ -96,14 +119,22 @@
     };
   }
 
+  // Quyền & cờ của tài khoản; mặc định khi thiếu (máy chủ cũ chưa có các trường này)
+  const EMPLOYEE_FLAG_DEFAULTS = { role: 'worker', hasTimesheet: true, notifyManager: false, notifyPersonal: true };
+
   function canonEmployee(e) {
+    const role = e.role === 'admin' ? 'admin' : 'worker';
     return {
       name: str(e.name),
       username: str(e.username).toLowerCase(),
       defaultOvertimeType: str(e.defaultOvertimeType),
       defaultWorkMode: str(e.defaultWorkMode),
       startDate: e.startDate || null,
-      endDate: e.endDate || null
+      endDate: e.endDate || null,
+      role,
+      hasTimesheet: e.hasTimesheet !== false,
+      notifyManager: role === 'admin' && Boolean(e.notifyManager), // công nhân không nhận báo cáo quản lý
+      notifyPersonal: e.notifyPersonal !== false
     };
   }
 
@@ -188,6 +219,12 @@
         const pw = e.password ? String(e.password) : '';
         if (prev.employees[e.name] !== cur.employees[e.name] || pw) {
           const o = canonEmployee(e);
+          // Chỉ gửi role / cờ khi KHÁC lần đồng bộ trước (dòng mới: khác mặc định); thiếu = máy chủ giữ nguyên
+          const prevObj = prev.employees[e.name] ? JSON.parse(prev.employees[e.name]) : null;
+          Object.keys(EMPLOYEE_FLAG_DEFAULTS).forEach((k) => {
+            const same = prevObj ? prevObj[k] === o[k] : o[k] === EMPLOYEE_FLAG_DEFAULTS[k];
+            if (same) delete o[k];
+          });
           if (pw) {
             o.password = pw;
             passwords[e.name] = pw;
@@ -233,7 +270,7 @@
     return chunks;
   }
 
-  const api = { createClient, isRetryable, canonRecord, canonEmployee, canonStatus, snapshotFromState, computeOps, chunkOps };
+  const api = { createClient, TELEGRAM_MISSING_MESSAGE, isRetryable, canonRecord, canonEmployee, canonStatus, snapshotFromState, computeOps, chunkOps };
   root.OTRemote = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

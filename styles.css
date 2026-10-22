@@ -2363,3 +2363,76 @@ tr.data-row.rest-day-row td { background: #fff1f2; }
 .matrix-attendance-table th.filter-day-col { border-top: 3px solid var(--primary); }
 /* Ô sửa sau chốt luôn nổi bật nhất */
 .cal-cell.warn { background: #fef08a; border-color: #ca8a04; }
+
+/* Quản đốc có chấm công cá nhân: chuyển "Báo công của tôi" / "Quản lý phân xưởng" */
+.view-switch-bar {
+  display: flex;
+  justify-content: center;
+  padding: 0.5rem 0.75rem 0;
+}
+.view-switch {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 3px;
+  padding: 3px;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+.view-switch-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  min-height: 38px;
+  padding: 0.35rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.view-switch-btn.active {
+  background: var(--primary);
+  color: #ffffff;
+}
+@media (max-width: 420px) {
+  .view-switch { width: 100%; }
+  .view-switch-btn { flex: 1; padding: 0.35rem 0.4rem; font-size: 0.78rem; }
+}
+
+/* Hộp thoại kết nối Telegram */
+.tg-status-box {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  font-size: 0.86rem;
+  margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.tg-status-box.linked { background: var(--emerald-light); border-color: #a7f3d0; color: #047857; font-weight: 700; }
+.tg-open-btn { text-decoration: none; margin-bottom: 0.75rem; }
+.tg-steps { margin: 0 0 0.6rem 1.2rem; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.6; }
+.tg-waiting { font-size: 0.84rem; font-weight: 600; color: var(--amber); overflow-wrap: anywhere; }
+.tg-waiting.done { color: var(--emerald); }
+#modalTelegramLink .modal-footer { flex-wrap: wrap; }
+
+/* Danh sách tài khoản trong "Nhân sự & Tài khoản": mỗi tài khoản một thẻ, tự xuống dòng ở màn hình hẹp */
+.emp-list { display: flex; flex-direction: column; }
+.emp-card { padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--border-color); font-size: 0.8rem; }
+.emp-card:last-child { border-bottom: none; }
+.emp-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.2rem 0.5rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
+.emp-card-no { color: var(--text-muted); font-weight: 600; }
+.emp-card-name { font-weight: 800; }
+.emp-role-tag { font-size: 0.68rem; font-weight: 700; padding: 0.05rem 0.4rem; border-radius: 4px; background: var(--amber-light); color: var(--amber); }
+.emp-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem 0.6rem; margin-bottom: 0.55rem; }
+.emp-field { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); }
+.emp-field .form-control { max-width: none; width: 100%; padding: 0.3rem 0.45rem; font-size: 0.82rem; }
+.emp-check { display: flex; align-items: center; gap: 0.4rem; min-width: 0; font-size: 0.78rem; font-weight: 600; color: var(--text-main); }
+.emp-check input { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--primary); }
+.emp-check.is-disabled { color: var(--text-muted); }
+.emp-tg-cell { font-size: 0.8rem; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
+.emp-tg-cell.linked { color: #047857; }
+.emp-tg-cell.muted { color: var(--text-muted); font-weight: 500; }
+.emp-card .emp-actions { justify-content: flex-start; }
+.worker-user-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
+@media (max-width: 420px) { .worker-user-row { flex-wrap: wrap; } }
