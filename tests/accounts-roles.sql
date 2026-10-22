@@ -364,7 +364,7 @@ select pg_temp.t('Chạy lại supabase_setup.sql: liên kết Telegram và phi�
   (select tg_chat_id from ot.employees where username = 'an') = '555111999' and pg_temp.pull_err('an') = '');
 
 -- Di trú 1 lần: bảng kiểu cũ (chưa có cột) -> admin = không chấm công + nhận báo cáo; công nhân = mặc định
-alter table ot.employees drop column has_timesheet, drop column notify_manager, drop column notify_personal;
+alter table ot.employees drop column has_timesheet cascade, drop column notify_manager cascade, drop column notify_personal cascade;   -- cascade: bỏ luôn trigger audit_employees_upd (setup tạo lại)
 \ir ../supabase_setup.sql
 select pg_temp.t('Di trú lần đầu: admin -> không chấm công, nhận báo cáo quản lý',
   count(*) = 2 and bool_and(not has_timesheet and notify_manager and notify_personal), count(*)::text)

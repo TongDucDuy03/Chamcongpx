@@ -75,9 +75,28 @@
       return res;
     }
 
+    /** Lịch sử sửa đổi (chỉ Quản đốc). Máy chủ cũ chưa có hàm → res.auditMissing = true. */
+    async function auditList(token, o) {
+      const f = o || {};
+      const res = await rpc('app_audit_list', {
+        p_token: token,
+        p_from: f.from || null,
+        p_to: f.to || null,
+        p_employee: f.employee || null,
+        p_before_id: f.beforeId === undefined || f.beforeId === null ? null : f.beforeId,
+        p_limit: f.limit || 100
+      });
+      if (!res.ok && (res.code === 'PGRST202' || res.code === '42883' || res.status === 404)) {
+        res.message = AUDIT_MISSING_MESSAGE;
+        res.auditMissing = true;
+      }
+      return res;
+    }
+
     return {
       rpc,
       url,
+      auditList,
       telegramLinkStart: (token) => telegramRpc('app_telegram_link_start', { p_token: token }),
       telegramLinkStatus: (token) => telegramRpc('app_telegram_link_status', { p_token: token }),
       telegramUnlink: (token, name) => telegramRpc('app_telegram_unlink', { p_token: token, p_name: name || null }),
@@ -87,6 +106,9 @@
 
   const TELEGRAM_MISSING_MESSAGE =
     'Máy chủ chưa cài bot Telegram (Quản trị viên cần chạy telegram_nhac_cham_cong.sql)';
+
+  const AUDIT_MISSING_MESSAGE =
+    'Máy chủ chưa có Lịch sử sửa đổi — Quản trị viên chạy lại supabase_setup.sql';
 
   function isRetryable(res) {
     return Boolean(res && (res.network || res.retryable));
@@ -270,7 +292,7 @@
     return chunks;
   }
 
-  const api = { createClient, TELEGRAM_MISSING_MESSAGE, isRetryable, canonRecord, canonEmployee, canonStatus, snapshotFromState, computeOps, chunkOps };
+  const api = { createClient, TELEGRAM_MISSING_MESSAGE, AUDIT_MISSING_MESSAGE, isRetryable, canonRecord, canonEmployee, canonStatus, snapshotFromState, computeOps, chunkOps };
   root.OTRemote = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

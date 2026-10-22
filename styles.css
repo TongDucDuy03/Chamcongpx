@@ -2436,3 +2436,78 @@ tr.data-row.rest-day-row td { background: #fff1f2; }
 .emp-card .emp-actions { justify-content: flex-start; }
 .worker-user-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
 @media (max-width: 420px) { .worker-user-row { flex-wrap: wrap; } }
+
+/* Hộp "Chi tiết công ngày": thân cuộn được, chân hộp (nút Đóng) luôn thấy trên màn hình nhỏ */
+#modalMatrixCellQuick .modal-dialog {
+  max-height: calc(100vh - 1.5rem);
+  max-height: calc(100dvh - 1.5rem);
+  display: flex;
+  flex-direction: column;
+}
+
+#modalMatrixCellQuick .modal-header,
+#modalMatrixCellQuick .modal-footer {
+  flex-shrink: 0;
+}
+
+#modalMatrixCellQuick .modal-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Lịch sử sửa đổi (nhật ký do máy chủ ghi) */
+.matrix-quick-audit {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.45rem 0.7rem;
+}
+
+.matrix-quick-audit > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.audit-view {
+  padding: 0.75rem;
+}
+
+.audit-box {
+  margin: 0.5rem 0;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.audit-view .audit-box {
+  max-height: none;
+}
+
+.audit-note {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin: 0.35rem 0;
+}
+
+.audit-group {
+  border-left: 3px solid var(--primary);
+  background: var(--bg-subtle);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  padding: 0.4rem 0.65rem;
+  margin-bottom: 0.45rem;
+  overflow-wrap: anywhere;
+}
+
+.audit-head {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.audit-lines {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: var(--text-main);
+}

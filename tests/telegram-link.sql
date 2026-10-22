@@ -329,7 +329,7 @@ select pg_temp.t('Chạy lại: giữ liên kết Telegram và mã đang chờ',
   (select tg_chat_id from ot.employees where username = 'an') = '700100100'
   and (select count(*) from ot.telegram_link_codes) = :codes0 and :codes0 >= 1);
 select pg_temp.t('Chạy lại: trigger mod_alerts còn đủ 3 cái, mỗi cron job đúng 1',
-  (select count(*) from pg_trigger where tgrelid = 'ot.mod_alerts'::regclass and not tgisinternal) = 3
+  (select count(*) from pg_trigger where tgrelid = 'ot.mod_alerts'::regclass and not tgisinternal and tgname like 'tg_%') = 3
   and (select count(*) from cron.job where jobname = 'telegram-nhan-lien-ket') = 1
   and (select count(*) from cron.job where jobname = 'nhac-cham-cong-telegram') = 1);
 select pg_temp.t('Chạy lại: link_status / link_start vẫn dùng được', pg_temp.rpc_err('app_telegram_link_start', 'an') = '' and pg_temp.rpc_err('app_telegram_link_status', 'an') = '');
@@ -441,7 +441,8 @@ select pg_temp.t('Còn 1 thay đổi chưa duyệt -> báo cáo hằng ngày có
 delete from net.calls;
 select ot.telegram_daily_remind();
 select pg_temp.t('Báo cáo hằng ngày kèm dòng "Còn N thay đổi sau chốt chưa duyệt"', pg_temp.sent('9001') like E'%\n\n📝 Còn 1 thay đổi sau chốt chưa duyệt.%', pg_temp.sent('9001'));
--- Duyệt
+-- Duyệt (chỉ tính là duyệt khi ngày vẫn đang chốt)
+insert into ot.locked_days (work_date) values (date '2026-10-16') on conflict do nothing;
 delete from net.calls;
 select pg_temp.push('admin', '{"alertsDelete":["16/10/2026::An"]}') as e \gset
 select pg_temp.t('Quản đốc duyệt: báo cho người bị sửa (An)',
@@ -452,9 +453,18 @@ select pg_temp.push('binh', jsonb_build_object('alertsUpsert', jsonb_build_array
 delete from net.calls;
 select pg_temp.push('admin', '{"alertsDelete":["16/10/2026::Bình"]}') as e \gset
 select pg_temp.t('Duyệt cho người tắt thông báo cá nhân: không gửi', :'e' = '' and pg_temp.nsend() = 0, :'e');
+-- Bỏ chốt ngày (lockedDelete + alertsDelete cùng lần lưu) cũng xóa cảnh báo nhưng KHÔNG phải duyệt: không báo
+select pg_temp.push('an', jsonb_build_object('alertsUpsert', jsonb_build_array(jsonb_build_object(
+  'key', '16/10/2026::An', 'data', '{"beforeCode":"2h","afterCode":"3h"}'::jsonb)))) as e \gset
+delete from net.calls;
+select pg_temp.push('admin', '{"lockedDelete":["16/10/2026"],"alertsDelete":["16/10/2026::An"]}') as e \gset
+select pg_temp.t('Bỏ chốt ngày có ô vàng: không gửi tin "đã duyệt"',
+  :'e' = '' and pg_temp.nsend() = 0 and not exists (select 1 from ot.mod_alerts where alert_key = '16/10/2026::An')
+  and not exists (select 1 from ot.locked_days where work_date = date '2026-10-16'), :'e' || pg_temp.nsend());
 -- Xóa nhân viên kéo theo xóa cảnh báo: không báo
 insert into ot.employees (name, username, password_hash) values ('Xóa thử', 'xoathu', 'x');
 insert into ot.mod_alerts (alert_key, work_date, employee_id, data) select '16/10/2026::Xóa thử', date '2026-10-16', id, '{"beforeCode":"1h"}' from ot.employees where username = 'xoathu';
+insert into ot.locked_days (work_date) values (date '2026-10-16') on conflict do nothing;   -- ngày đang chốt: chỉ còn lý do "nhân viên đã mất" để không báo
 delete from net.calls;
 delete from ot.employees where username = 'xoathu';
 select pg_temp.t('Xóa nhân viên (cascade xóa cảnh báo): không gửi tin duyệt, không lỗi', pg_temp.nsend() = 0 and not exists (select 1 from ot.mod_alerts));

@@ -69,6 +69,10 @@ Cài đặt:
 
 Đổi giờ nhắc: `select ot.telegram_set_time('15:30');` (giờ Việt Nam). Tắt nhắc: `select ot.telegram_off();`. **Đổi sang token bot khác**: chạy lại `telegram_setup` với token mới; mọi người phải bấm *Kết nối Telegram* lại với bot mới. Chạy lại file `.sql` hoặc `telegram_setup` cùng token không mất liên kết nào.
 
+## Lịch sử sửa đổi
+
+Máy chủ tự ghi lại ai sửa gì, lúc nào, của ai, ngày nào (ca tăng ca, nghỉ / về sớm, chốt / bỏ chốt ngày, duyệt sửa sau chốt, ngày lễ, tài khoản; không ghi mật khẩu), giữ 400 ngày. Chỉ Admin xem được (hộp "Chi tiết công ngày" và tab "Lịch sử sửa đổi"). Chỉ có khi dùng Supabase. **Cập nhật bản cũ: chạy lại `supabase_setup.sql` trong SQL Editor** (an toàn, không mất dữ liệu); chưa chạy thì web báo "Máy chủ chưa có Lịch sử sửa đổi". Thay đổi làm trực tiếp bằng SQL Editor cũng được ghi (không có tên người sửa).
+
 ## Bảo mật
 
 - Mọi bảng dữ liệu nằm trong schema riêng `ot`, không mở ra ngoài API. Trình duyệt chỉ gọi được các hàm `app_*` (đăng nhập, đăng xuất, đổi mật khẩu, tải, hỏi nhanh có gì mới, lưu, và 4 hàm Telegram), mỗi hàm tự kiểm tra phiên đăng nhập.

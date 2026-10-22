@@ -733,6 +733,9 @@
             <button type="button" class="excel-sheet-tab" data-sheet="SHEET_EMPLOYEES">
               Nhân viên (<span id="sheet2CountLabel">9</span>)
             </button>
+            <button type="button" class="excel-sheet-tab" data-sheet="SHEET_HISTORY">
+              Lịch sử sửa đổi
+            </button>
             <button type="button" class="excel-sheet-tab" data-sheet="SHEET_GUIDE">
               Quy định
             </button>
@@ -842,6 +845,9 @@
           </div>
 
           <!-- NỘI DUNG SHEET 3: HƯỚNG DẪN -->
+          <!-- NỘI DUNG TAB: LỊCH SỬ SỬA ĐỔI (máy chủ ghi, chỉ Quản đốc) -->
+          <div id="sheetViewHistory" class="audit-view" style="display: none;"></div>
+
           <div id="sheetViewGuide" class="excel-table-scroll" style="display: none;">
             <table class="excel-replica-table">
               <thead>
@@ -1072,6 +1078,13 @@
             <button type="button" class="slot-mini-btn" data-quick-cell-combo="FULL_615_1915"><strong>X+5</strong> • Sáng 1h + Trưa 2h + Tối 2h</button>
           </div>
         </div>
+
+        <!-- Lịch sử sửa ngày này: nằm ngoài các phần app.js vẽ lại sau mỗi lần sửa nên giữ nguyên trạng thái mở -->
+        <details id="matrixQuickAudit" class="matrix-quick-audit" style="display: none;">
+          <summary>Lịch sử sửa ngày này</summary>
+          <div id="matrixQuickAuditBody" class="audit-box"></div>
+          <button type="button" id="btnMatrixQuickAuditAll" class="slot-mini-btn">Xem tất cả ở tab Lịch sử</button>
+        </details>
       </div>
       <div class="modal-footer">
         <button type="button" id="btnMatrixQuickJumpSheet1" class="action-btn" style="margin-right: auto;">

@@ -360,8 +360,10 @@ begin
     end if;
     delete from ot.telegram_alert_sent where alert_key = old.alert_key;   -- đã duyệt: lần sửa sau là sự kiện mới
     -- Xóa do xóa nhân viên (cascade) thì dòng nhân viên đã mất: không báo
+    -- Bỏ chốt ngày (ngày không còn trong locked_days) cũng xóa cảnh báo nhưng KHÔNG phải là duyệt: không báo
     select * into e from ot.employees where id = old.employee_id;
-    if found and e.notify_personal and e.tg_chat_id is not null then
+    if found and e.notify_personal and e.tg_chat_id is not null
+       and exists (select 1 from ot.locked_days d where d.work_date = old.work_date) then
       perform ot.tg_post(e.tg_chat_id, format('✅ Quản đốc đã duyệt thay đổi sau chốt ngày %s của bạn.', ot.tg_day_label(old.work_date)));
     end if;
   exception when others then

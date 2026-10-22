@@ -144,6 +144,25 @@ alter table ot.employees add column if not exists tg_chat_id text;
 alter table ot.employees add column if not exists tg_name text;
 alter table ot.employees add column if not exists tg_linked_at timestamptz;
 
+-- Lịch sử sửa đổi (nhật ký do máy chủ tự ghi bằng trigger, giữ 400 ngày). Không khóa ngoại: xóa người vẫn giữ log.
+create table if not exists ot.audit_log (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  txid bigint not null default txid_current(),
+  actor_id bigint,
+  actor_name text,
+  actor_role text,
+  source text not null default 'sql' check (source in ('web', 'sql')),
+  action text not null,
+  target_id bigint,
+  target_name text,
+  work_date date,
+  before jsonb,
+  after jsonb
+);
+create index if not exists audit_log_target_idx on ot.audit_log (target_name, work_date);
+create index if not exists audit_log_at_idx on ot.audit_log (at);
+
 alter table ot.employees enable row level security;
 alter table ot.meta enable row level security;
 alter table ot.sessions enable row level security;
@@ -152,6 +171,7 @@ alter table ot.holidays enable row level security;
 alter table ot.locked_days enable row level security;
 alter table ot.mod_alerts enable row level security;
 alter table ot.day_status enable row level security;
+alter table ot.audit_log enable row level security;
 
 revoke all on schema ot from public, anon, authenticated;
 revoke all on all tables in schema ot from public, anon, authenticated;
@@ -283,6 +303,253 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------
+-- 2b. LỊCH SỬ SỬA ĐỔI: trigger tự ghi vào ot.audit_log (cùng giao dịch với việc lưu, không bọc EXCEPTION)
+--     Người sửa lấy từ ot.actor_id (app_push / app_change_password đặt bằng set_config, chỉ trong giao dịch);
+--     không có = sửa thẳng bằng SQL Editor (source 'sql'). Điều kiện "có đổi" nằm ở mệnh đề WHEN của trigger
+--     để lệnh cập nhật hàng loạt (rev = rev + 1, gửi lại ca khi duyệt) không phải chạy plpgsql.
+-- ---------------------------------------------------------------------
+
+create or replace function ot.audit_write(p_action text, p_target_id bigint, p_target_name text, p_date date,
+                                          p_before jsonb, p_after jsonb) returns void
+language plpgsql set search_path = '' as $$
+declare
+  v_actor bigint := nullif(current_setting('ot.actor_id', true), '')::bigint;
+  v_aname text;
+  v_arole text;
+begin
+  if v_actor is not null then
+    select e.name, e.role into v_aname, v_arole from ot.employees e where e.id = v_actor;
+  end if;
+  insert into ot.audit_log (actor_id, actor_name, actor_role, source, action, target_id, target_name, work_date, before, after)
+  values (v_actor, v_aname, v_arole, case when v_actor is null then 'sql' else 'web' end,
+          p_action, p_target_id, p_target_name, p_date, p_before, p_after);
+end $$;
+
+create or replace function ot.audit_shift(r ot.records) returns jsonb
+language sql stable set search_path = '' as $$
+  select jsonb_build_object('id', r.id, 'start', r.start_time, 'end', r.end_time, 'overrideHours', r.override_hours,
+                            'workMode', r.work_mode, 'overtimeType', r.overtime_type, 'jobContent', r.job_content, 'note', r.note)
+$$;
+
+create or replace function ot.audit_records() returns trigger
+language plpgsql set search_path = '' as $$
+declare
+  v_old_name text;
+  v_new_name text;
+begin
+  if tg_op = 'INSERT' then
+    perform ot.audit_write('record_add', new.employee_id, (select e.name from ot.employees e where e.id = new.employee_id),
+                           new.work_date, null, ot.audit_shift(new));
+  elsif tg_op = 'DELETE' then
+    perform ot.audit_write('record_delete', old.employee_id, (select e.name from ot.employees e where e.id = old.employee_id),
+                           old.work_date, ot.audit_shift(old), null);
+  elsif old.employee_id is distinct from new.employee_id or old.work_date is distinct from new.work_date then
+    v_old_name := (select e.name from ot.employees e where e.id = old.employee_id);
+    v_new_name := (select e.name from ot.employees e where e.id = new.employee_id);
+    perform ot.audit_write('record_move_out', old.employee_id, v_old_name, old.work_date, ot.audit_shift(old),
+                           jsonb_build_object('toEmployee', v_new_name, 'toDate', to_char(new.work_date, 'DD/MM/YYYY')));
+    perform ot.audit_write('record_move_in', new.employee_id, v_new_name, new.work_date,
+                           jsonb_build_object('fromEmployee', v_old_name, 'fromDate', to_char(old.work_date, 'DD/MM/YYYY')),
+                           ot.audit_shift(new));
+  else
+    perform ot.audit_write('record_edit', new.employee_id, (select e.name from ot.employees e where e.id = new.employee_id),
+                           new.work_date, ot.audit_shift(old), ot.audit_shift(new));
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_records_ins on ot.records;
+create trigger audit_records_ins after insert on ot.records
+  for each row execute function ot.audit_records();
+drop trigger if exists audit_records_upd on ot.records;
+create trigger audit_records_upd after update on ot.records
+  for each row when (old.employee_id is distinct from new.employee_id
+                  or old.job_content is distinct from new.job_content
+                  or old.start_ts is distinct from new.start_ts
+                  or old.end_ts is distinct from new.end_ts
+                  or old.work_date is distinct from new.work_date
+                  or old.override_hours is distinct from new.override_hours
+                  or old.overtime_type is distinct from new.overtime_type
+                  or old.work_mode is distinct from new.work_mode
+                  or old.note is distinct from new.note)
+  execute function ot.audit_records();
+drop trigger if exists audit_records_del on ot.records;
+create trigger audit_records_del after delete on ot.records
+  for each row execute function ot.audit_records();
+
+create or replace function ot.audit_day_status() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'DELETE' then
+    perform ot.audit_write('status_clear', old.employee_id, (select e.name from ot.employees e where e.id = old.employee_id),
+                           old.work_date, jsonb_build_object('leave', old.leave, 'earlyHours', old.early_hours), null);
+  else
+    perform ot.audit_write('status_set', new.employee_id, (select e.name from ot.employees e where e.id = new.employee_id),
+                           new.work_date,
+                           case when tg_op = 'UPDATE' then jsonb_build_object('leave', old.leave, 'earlyHours', old.early_hours) end,
+                           jsonb_build_object('leave', new.leave, 'earlyHours', new.early_hours));
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_day_status_ins on ot.day_status;
+create trigger audit_day_status_ins after insert on ot.day_status
+  for each row execute function ot.audit_day_status();
+drop trigger if exists audit_day_status_upd on ot.day_status;
+create trigger audit_day_status_upd after update on ot.day_status
+  for each row when (old.leave is distinct from new.leave or old.early_hours is distinct from new.early_hours)
+  execute function ot.audit_day_status();
+drop trigger if exists audit_day_status_del on ot.day_status;
+create trigger audit_day_status_del after delete on ot.day_status
+  for each row execute function ot.audit_day_status();
+
+-- Chốt / bỏ chốt ngày (làm mới snapshot khi duyệt hoặc chốt lại = UPDATE: không ghi)
+create or replace function ot.audit_locked_days() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'INSERT' then
+    perform ot.audit_write('day_lock', null, null, new.work_date, null, null);
+  else
+    perform ot.audit_write('day_unlock', null, null, old.work_date, null, null);
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_locked_days_ins on ot.locked_days;
+create trigger audit_locked_days_ins after insert on ot.locked_days
+  for each row execute function ot.audit_locked_days();
+drop trigger if exists audit_locked_days_del on ot.locked_days;
+create trigger audit_locked_days_del after delete on ot.locked_days
+  for each row execute function ot.audit_locked_days();
+
+-- Duyệt sửa sau chốt = xóa cảnh báo khi người đó còn tồn tại VÀ ngày vẫn đang chốt
+-- (xóa nhân viên -> cascade, hoặc bỏ chốt ngày -> cảnh báo bị dọn theo: KHÔNG phải duyệt)
+create or replace function ot.audit_mod_alert_del() returns trigger
+language plpgsql set search_path = '' as $$
+declare
+  v_name text;
+begin
+  select e.name into v_name from ot.employees e where e.id = old.employee_id;
+  if v_name is not null and exists (select 1 from ot.locked_days d where d.work_date = old.work_date) then
+    perform ot.audit_write('alert_approve', old.employee_id, v_name, old.work_date,
+                           jsonb_build_object('beforeCode', left(coalesce(old.data ->> 'beforeCode', ''), 60),
+                                              'afterCode', left(coalesce(old.data ->> 'afterCode', ''), 60)),
+                           null);
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_mod_alerts_del on ot.mod_alerts;
+create trigger audit_mod_alerts_del after delete on ot.mod_alerts
+  for each row execute function ot.audit_mod_alert_del();
+
+create or replace function ot.audit_holidays() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'DELETE' then
+    perform ot.audit_write('holiday_delete', null, null, old.work_date, jsonb_build_object('name', old.name), null);
+  else
+    perform ot.audit_write('holiday_set', null, null, new.work_date, null, jsonb_build_object('name', new.name));
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_holidays_ins on ot.holidays;
+create trigger audit_holidays_ins after insert on ot.holidays
+  for each row execute function ot.audit_holidays();
+drop trigger if exists audit_holidays_upd on ot.holidays;
+create trigger audit_holidays_upd after update on ot.holidays
+  for each row when (old.name is distinct from new.name)
+  execute function ot.audit_holidays();
+drop trigger if exists audit_holidays_del on ot.holidays;
+create trigger audit_holidays_del after delete on ot.holidays
+  for each row execute function ot.audit_holidays();
+
+-- Tài khoản: không bao giờ ghi mật khẩu / băm; bỏ qua failed_attempts, locked_until, must_change_password, rev, updated_at, tg_*
+create or replace function ot.audit_employees() returns trigger
+language plpgsql set search_path = '' as $$
+declare
+  v_b jsonb := '{}'::jsonb;
+  v_a jsonb := '{}'::jsonb;
+  v_actor bigint;
+begin
+  if tg_op = 'INSERT' then
+    perform ot.audit_write('account_create', new.id, new.name, null, null,
+      jsonb_build_object('username', new.username, 'role', new.role, 'hasTimesheet', new.has_timesheet,
+                         'startDate', to_char(new.start_date, 'YYYY-MM-DD')));
+  elsif tg_op = 'DELETE' then
+    perform ot.audit_write('account_delete', old.id, old.name, null,
+      jsonb_build_object('username', old.username, 'role', old.role), null);
+  else
+    if old.username is distinct from new.username then
+      v_b := v_b || jsonb_build_object('username', old.username);
+      v_a := v_a || jsonb_build_object('username', new.username);
+    end if;
+    if old.role is distinct from new.role then
+      v_b := v_b || jsonb_build_object('role', old.role);
+      v_a := v_a || jsonb_build_object('role', new.role);
+    end if;
+    if old.has_timesheet is distinct from new.has_timesheet then
+      v_b := v_b || jsonb_build_object('hasTimesheet', old.has_timesheet);
+      v_a := v_a || jsonb_build_object('hasTimesheet', new.has_timesheet);
+    end if;
+    if old.notify_manager is distinct from new.notify_manager then
+      v_b := v_b || jsonb_build_object('notifyManager', old.notify_manager);
+      v_a := v_a || jsonb_build_object('notifyManager', new.notify_manager);
+    end if;
+    if old.notify_personal is distinct from new.notify_personal then
+      v_b := v_b || jsonb_build_object('notifyPersonal', old.notify_personal);
+      v_a := v_a || jsonb_build_object('notifyPersonal', new.notify_personal);
+    end if;
+    if old.start_date is distinct from new.start_date then
+      v_b := v_b || jsonb_build_object('startDate', to_char(old.start_date, 'YYYY-MM-DD'));
+      v_a := v_a || jsonb_build_object('startDate', to_char(new.start_date, 'YYYY-MM-DD'));
+    end if;
+    if old.end_date is distinct from new.end_date then
+      v_b := v_b || jsonb_build_object('endDate', to_char(old.end_date, 'YYYY-MM-DD'));
+      v_a := v_a || jsonb_build_object('endDate', to_char(new.end_date, 'YYYY-MM-DD'));
+    end if;
+    if old.default_overtime_type is distinct from new.default_overtime_type then
+      v_b := v_b || jsonb_build_object('defaultOvertimeType', old.default_overtime_type);
+      v_a := v_a || jsonb_build_object('defaultOvertimeType', new.default_overtime_type);
+    end if;
+    if old.default_work_mode is distinct from new.default_work_mode then
+      v_b := v_b || jsonb_build_object('defaultWorkMode', old.default_work_mode);
+      v_a := v_a || jsonb_build_object('defaultWorkMode', new.default_work_mode);
+    end if;
+    if v_a <> '{}'::jsonb then
+      perform ot.audit_write('account_update', new.id, new.name, null, v_b, v_a);
+    end if;
+    if old.password_hash is distinct from new.password_hash then
+      v_actor := nullif(current_setting('ot.actor_id', true), '')::bigint;
+      perform ot.audit_write(case when v_actor is not distinct from new.id then 'password_change' else 'password_reset' end,
+                             new.id, new.name, null, null, null);
+    end if;
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists audit_employees_ins on ot.employees;
+create trigger audit_employees_ins after insert on ot.employees
+  for each row execute function ot.audit_employees();
+drop trigger if exists audit_employees_upd on ot.employees;
+create trigger audit_employees_upd after update on ot.employees
+  for each row when (old.username is distinct from new.username
+                  or old.role is distinct from new.role
+                  or old.has_timesheet is distinct from new.has_timesheet
+                  or old.notify_manager is distinct from new.notify_manager
+                  or old.notify_personal is distinct from new.notify_personal
+                  or old.start_date is distinct from new.start_date
+                  or old.end_date is distinct from new.end_date
+                  or old.default_overtime_type is distinct from new.default_overtime_type
+                  or old.default_work_mode is distinct from new.default_work_mode
+                  or old.password_hash is distinct from new.password_hash)
+  execute function ot.audit_employees();
+drop trigger if exists audit_employees_del on ot.employees;
+create trigger audit_employees_del after delete on ot.employees
+  for each row execute function ot.audit_employees();
+
+-- ---------------------------------------------------------------------
 -- 3. CÁC HÀM MÀ TRÌNH DUYỆT ĐƯỢC GỌI
 -- ---------------------------------------------------------------------
 
@@ -351,6 +618,7 @@ declare
   v_min int;
 begin
   v := ot.require_session(p_token);
+  perform set_config('ot.actor_id', v.id::text, true);
   if v.password_hash <> extensions.crypt(coalesce(p_old, ''), v.password_hash) then
     return jsonb_build_object('ok', false, 'error', 'bad_old', 'message', 'Mật khẩu hiện tại chưa đúng.');
   end if;
@@ -538,6 +806,7 @@ declare
 begin
   v := ot.require_session(p_token);
   is_admin := (v.role = 'admin');
+  perform set_config('ot.actor_id', v.id::text, true);   -- người sửa, để trigger audit_* ghi vào Lịch sử sửa đổi
 
   if p_ops is null or jsonb_typeof(p_ops) <> 'object' then
     perform ot.fail('bad_request', 'Dữ liệu gửi lên không hợp lệ.');
@@ -1003,12 +1272,63 @@ begin
     update ot.employees set rev = rev + 1 where id = any (v_bump);
   end if;
   update ot.meta set version = version + 1 where id = 1;
+  -- Lịch sử sửa đổi chỉ giữ 400 ngày
+  delete from ot.audit_log where at < now() - interval '400 days';
 
   return jsonb_build_object(
     'ok', true,
     'receipts', receipts,
     'serverTime', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
   );
+end $$;
+
+-- Xem lịch sử sửa đổi (chỉ quản trị viên). Lọc ngày theo coalesce(work_date, ngày VN của lúc ghi); phân trang bằng p_before_id.
+create or replace function public.app_audit_list(p_token text, p_from date default null, p_to date default null,
+                                                 p_employee text default null, p_before_id bigint default null,
+                                                 p_limit int default 100) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v ot.employees;
+  v_limit int := least(greatest(coalesce(p_limit, 100), 1), 200);
+  v_emp text := nullif(btrim(coalesce(p_employee, '')), '');
+  v_ids bigint[];
+  v_more boolean;
+  v_entries jsonb;
+begin
+  v := ot.require_session(p_token);
+  if v.role <> 'admin' then
+    perform ot.fail('forbidden', 'Chỉ quản trị viên được xem lịch sử sửa đổi.');
+  end if;
+
+  -- Một quy tắc cho mọi bộ lọc: ngày = coalesce(work_date, ngày VN của lúc ghi) nằm trong [p_from, p_to].
+  -- Có p_employee: dòng của người đó, cộng dòng cấp ngày (không có đối tượng nhưng có work_date: chốt / bỏ chốt / ngày lễ).
+  select array_agg(x.id order by x.id desc) into v_ids from (
+    select a.id from ot.audit_log a
+     where (v_emp is null or a.target_name = v_emp or (a.target_name is null and a.work_date is not null))
+       and (p_before_id is null or a.id < p_before_id)
+       and (p_from is null or coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) >= p_from)
+       and (p_to is null or coalesce(a.work_date, (a.at at time zone 'Asia/Ho_Chi_Minh')::date) <= p_to)
+     order by a.id desc limit v_limit + 1) x;
+
+  v_more := coalesce(array_length(v_ids, 1), 0) > v_limit;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', a.id,
+           'txid', a.txid,
+           'at', to_char(a.at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           'atVn', to_char(a.at at time zone 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI'),
+           'actorName', a.actor_name,
+           'actorRole', a.actor_role,
+           'source', a.source,
+           'action', a.action,
+           'targetName', a.target_name,
+           'workDate', to_char(a.work_date, 'DD/MM/YYYY'),
+           'before', a.before,
+           'after', a.after) order by a.id desc), '[]'::jsonb)
+    into v_entries
+    from ot.audit_log a
+   where a.id = any (coalesce(v_ids[1:v_limit], '{}'::bigint[]));
+
+  return jsonb_build_object('ok', true, 'entries', v_entries, 'more', v_more);
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -1062,6 +1382,7 @@ revoke all on function public.app_change_password(text, text, text) from public;
 revoke all on function public.app_pull(text, date, date) from public;
 revoke all on function public.app_pulse(text) from public;
 revoke all on function public.app_push(text, jsonb) from public;
+revoke all on function public.app_audit_list(text, date, date, text, bigint, int) from public;
 
 grant execute on function public.app_login(text, text) to anon, authenticated;
 grant execute on function public.app_logout(text) to anon, authenticated;
@@ -1069,5 +1390,6 @@ grant execute on function public.app_change_password(text, text, text) to anon, 
 grant execute on function public.app_pull(text, date, date) to anon, authenticated;
 grant execute on function public.app_pulse(text) to anon, authenticated;
 grant execute on function public.app_push(text, jsonb) to anon, authenticated;
+grant execute on function public.app_audit_list(text, date, date, text, bigint, int) to anon, authenticated;
 
 notify pgrst, 'reload schema';

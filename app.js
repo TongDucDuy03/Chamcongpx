@@ -377,7 +377,7 @@
 
   let state = {
     activeMainTab: 'LOGIN', // 'LOGIN' | 'WORKER_MOBILE' | 'ADMIN_EXCEL'
-    activeExcelSheet: 'SHEET_MATRIX', // 'SHEET_MATRIX' | 'SHEET_OVERTIME' | 'SHEET_EMPLOYEES' | 'SHEET_GUIDE'
+    activeExcelSheet: 'SHEET_MATRIX', // 'SHEET_MATRIX' | 'SHEET_OVERTIME' | 'SHEET_EMPLOYEES' | 'SHEET_HISTORY' | 'SHEET_GUIDE'
     showExcelGuideRows: true,
     matrixShowAllDays: false,
     matrixOnlyPending: false,
@@ -4410,11 +4410,13 @@
     const v1 = document.getElementById('sheetViewOvertime');
     const v2 = document.getElementById('sheetViewEmployees');
     const v3 = document.getElementById('sheetViewGuide');
+    const vHist = document.getElementById('sheetViewHistory');
 
     if (vMatrix) vMatrix.style.display = state.activeExcelSheet === 'SHEET_MATRIX' ? 'block' : 'none';
     if (v1) v1.style.display = state.activeExcelSheet === 'SHEET_OVERTIME' ? 'block' : 'none';
     if (v2) v2.style.display = state.activeExcelSheet === 'SHEET_EMPLOYEES' ? 'block' : 'none';
     if (v3) v3.style.display = state.activeExcelSheet === 'SHEET_GUIDE' ? 'block' : 'none';
+    if (vHist) vHist.style.display = state.activeExcelSheet === 'SHEET_HISTORY' ? 'block' : 'none';
 
     document.querySelectorAll('.excel-sheet-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-sheet') === state.activeExcelSheet);
@@ -4424,6 +4426,7 @@
     renderExcelSheet1Overtime();
     renderExcelSheet2Employees();
     renderExcelSheet3Guide();
+    renderAuditHistorySheet();
   }
 
   /**
@@ -4795,6 +4798,7 @@
   function openMatrixCellQuickModal(empName, vnDate) {
     state.quickCellEmp = empName;
     state.quickCellDate = vnDate;
+    setupQuickAudit();
     renderMatrixCellQuickModal();
     document.getElementById('modalMatrixCellQuick')?.classList.add('open');
   }
@@ -4934,6 +4938,443 @@
         });
       });
     }
+  }
+
+  // ==========================================================================
+  // LỊCH SỬ SỬA ĐỔI (nhật ký do máy chủ ghi; chỉ Quản đốc xem, chỉ khi kết nối Supabase)
+  // ==========================================================================
+  const AUDIT_ACTOR_ROLE_LABELS = { admin: 'Quản đốc', worker: 'Công nhân' };
+  const AUDIT_ACCOUNT_ROLE_LABELS = { admin: 'Admin – Quản đốc', worker: 'Công nhân' };
+  const AUDIT_ACCOUNT_FIELD_LABELS = {
+    username: 'Tên đăng nhập',
+    notifyManager: 'Nhận báo cáo quản lý',
+    notifyPersonal: 'Nhắc chấm công cá nhân',
+    startDate: 'Ngày bắt đầu',
+    endDate: 'Ngày kết thúc',
+    defaultOvertimeType: 'Loại tăng ca mặc định',
+    defaultWorkMode: 'Hình thức mặc định'
+  };
+  const AUDIT_PAGE_SIZE = 100;
+  const AUDIT_FALLBACK_MISSING = 'Máy chủ chưa có Lịch sử sửa đổi — Quản trị viên chạy lại supabase_setup.sql';
+
+  function auditStr(v) {
+    return v === null || v === undefined ? '' : String(v);
+  }
+
+  /** 'dd/mm/yyyy HH:MM' → 'HH:MM' nếu đúng ngày `dayVn`, ngược lại 'dd/mm HH:MM' */
+  function auditTimePart(v, dayVn) {
+    const m = /^(\d{2}\/\d{2}\/\d{4}) (\d{2}:\d{2})/.exec(auditStr(v));
+    if (!m) return auditStr(v);
+    return m[1] === dayVn ? m[2] : `${m[1].slice(0, 5)} ${m[2]}`;
+  }
+
+  function auditShiftTimes(s, dayVn) {
+    if (!s) return '';
+    return `${auditTimePart(s.start, dayVn)}–${auditTimePart(s.end, dayVn)}`;
+  }
+
+  function auditShiftLabel(s, dayVn) {
+    const t = auditShiftTimes(s, dayVn);
+    return s && s.workMode ? `${t} (${auditStr(s.workMode)})` : t;
+  }
+
+  function auditHoursText(v) {
+    return v === null || v === undefined || v === '' ? 'tự tính' : `${formatHoursClean(v)}h`;
+  }
+
+  function auditLeaveText(v) {
+    const k = auditStr(v);
+    return k ? LEAVE_LABELS[k] || k : 'Đủ ngày';
+  }
+
+  function auditEarlyText(v) {
+    const n = Number(v || 0);
+    return n > 0 ? `${formatHoursClean(n)}h` : '0';
+  }
+
+  function auditBoolText(v) {
+    return v ? 'Bật' : 'Tắt';
+  }
+
+  function auditDateText(v) {
+    const s = auditStr(v);
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? isoDateToVnDate(s.slice(0, 10)) : s || '(trống)';
+  }
+
+  /** Các dòng mô tả việc sửa 1 ca (giờ, nội dung, ghi chú, hình thức, loại, giờ chốt) */
+  function auditShiftEditLines(b, a, dayVn) {
+    const lines = [];
+    const bt = auditShiftTimes(b, dayVn);
+    const at = auditShiftTimes(a, dayVn);
+    if (bt !== at) lines.push(`Đổi ca ${bt} → ${at}`);
+    const pre = bt !== at ? '' : `Ca ${at}: `;
+    if (auditStr(b.jobContent) !== auditStr(a.jobContent)) {
+      lines.push(`${pre}Nội dung: “${auditStr(b.jobContent)}” → “${auditStr(a.jobContent)}”`);
+    }
+    if (auditStr(b.note) !== auditStr(a.note)) {
+      lines.push(`${pre}Ghi chú: “${auditStr(b.note)}” → “${auditStr(a.note)}”`);
+    }
+    if (auditStr(b.workMode) !== auditStr(a.workMode)) {
+      lines.push(`${pre}Hình thức: ${auditStr(b.workMode)} → ${auditStr(a.workMode)}`);
+    }
+    if (auditStr(b.overtimeType) !== auditStr(a.overtimeType)) {
+      lines.push(`${pre}Loại tăng ca: ${auditStr(b.overtimeType)} → ${auditStr(a.overtimeType)}`);
+    }
+    if (auditStr(b.overrideHours) !== auditStr(a.overrideHours)) {
+      lines.push(`${pre}Giờ chốt: ${auditHoursText(b.overrideHours)} → ${auditHoursText(a.overrideHours)}`);
+    }
+    if (!lines.length) lines.push(`Sửa ca ${at}`);
+    return lines;
+  }
+
+  function auditAccountUpdateLines(b, a) {
+    const lines = [];
+    Object.keys(Object.assign({}, b, a)).forEach((k) => {
+      const bv = b[k];
+      const av = a[k];
+      if (k === 'role') {
+        lines.push(`Đổi quyền: ${AUDIT_ACCOUNT_ROLE_LABELS[bv] || auditStr(bv)} → ${AUDIT_ACCOUNT_ROLE_LABELS[av] || auditStr(av)}`);
+      } else if (k === 'hasTimesheet') {
+        lines.push(`${av ? 'Bật' : 'Tắt'} chấm công cá nhân`);
+      } else if (k === 'notifyManager' || k === 'notifyPersonal') {
+        lines.push(`${AUDIT_ACCOUNT_FIELD_LABELS[k]}: ${auditBoolText(bv)} → ${auditBoolText(av)}`);
+      } else if (k === 'startDate' || k === 'endDate') {
+        lines.push(`${AUDIT_ACCOUNT_FIELD_LABELS[k]}: ${auditDateText(bv)} → ${auditDateText(av)}`);
+      } else {
+        lines.push(`${AUDIT_ACCOUNT_FIELD_LABELS[k] || k}: ${auditStr(bv)} → ${auditStr(av)}`);
+      }
+    });
+    return lines.length ? lines : ['Sửa tài khoản'];
+  }
+
+  /** Ghép cặp chuyển ca (record_move_out / record_move_in) trong cùng giao dịch theo id ca */
+  function auditBuildMoves(entries) {
+    const map = {};
+    (entries || []).forEach((e) => {
+      if (!e || (e.action !== 'record_move_out' && e.action !== 'record_move_in')) return;
+      const s = e.action === 'record_move_out' ? e.before : e.after;
+      const slot = (map[`${e.txid}|${s && s.id}`] = map[`${e.txid}|${s && s.id}`] || {});
+      slot[e.action === 'record_move_out' ? 'out' : 'in'] = e;
+    });
+    return map;
+  }
+
+  function auditPlaceText(e) {
+    return `${auditStr(e.targetName)} ngày ${auditStr(e.workDate).slice(0, 5)}`;
+  }
+
+  /** Các dòng mô tả (chuỗi thường, CHƯA escape) của 1 dòng nhật ký. Action lạ → 1 dòng chung, không lỗi. */
+  function auditEntryLines(e, moves) {
+    const b = e.before || {};
+    const a = e.after || {};
+    const day = auditStr(e.workDate);
+    switch (e.action) {
+      case 'record_add':
+        return [`Thêm ca ${auditShiftLabel(a, day)}`];
+      case 'record_edit':
+        return auditShiftEditLines(b, a, day);
+      case 'record_delete':
+        return [`Xóa ca ${auditShiftTimes(b, day)}`];
+      case 'record_move_out': {
+        const pair = moves && moves[`${e.txid}|${b.id}`];
+        const dest = pair && pair.in ? auditPlaceText(pair.in) : a.toEmployee ? `${auditStr(a.toEmployee)} ngày ${auditStr(a.toDate).slice(0, 5)}` : 'người / ngày khác';
+        return [`Chuyển ca ${auditShiftTimes(b, day)} sang ${dest}`];
+      }
+      case 'record_move_in': {
+        const pair = moves && moves[`${e.txid}|${a.id}`];
+        const src = pair && pair.out ? auditPlaceText(pair.out) : b.fromEmployee ? `${auditStr(b.fromEmployee)} ngày ${auditStr(b.fromDate).slice(0, 5)}` : 'người / ngày khác';
+        return [`Nhận ca ${auditShiftTimes(a, day)} từ ${src}`];
+      }
+      case 'status_set': {
+        const bl = e.before ? b.leave : '';
+        const be = e.before ? b.earlyHours : 0;
+        const lines = [];
+        if (auditStr(bl) !== auditStr(a.leave)) lines.push(`Nghỉ: ${auditLeaveText(bl)} → ${auditLeaveText(a.leave)}`);
+        if (Number(be || 0) !== Number(a.earlyHours || 0)) {
+          lines.push(`Về sớm: ${auditEarlyText(be)} → ${auditEarlyText(a.earlyHours)}`);
+        }
+        return lines.length ? lines : [`Nghỉ: ${auditLeaveText(a.leave)}`];
+      }
+      case 'status_clear': {
+        const parts = [];
+        if (auditStr(b.leave)) parts.push(auditLeaveText(b.leave));
+        if (Number(b.earlyHours || 0) > 0) parts.push(`về sớm ${auditEarlyText(b.earlyHours)}`);
+        return [`Bỏ nghỉ / về sớm${parts.length ? ` (${parts.join(', ')})` : ''}`];
+      }
+      case 'day_lock':
+        return ['Chốt ngày'];
+      case 'day_unlock':
+        return ['Bỏ chốt ngày'];
+      case 'alert_approve':
+        return [`Duyệt sửa sau chốt: ${auditStr(b.beforeCode)} → ${auditStr(b.afterCode)}`];
+      case 'holiday_set':
+        return [`Ngày lễ: ${auditStr(a.name)}`];
+      case 'holiday_delete':
+        return [`Bỏ ngày lễ: ${auditStr(b.name)}`];
+      case 'account_create': {
+        const extra = [];
+        if (a.role) extra.push(AUDIT_ACCOUNT_ROLE_LABELS[a.role] || auditStr(a.role));
+        if (a.username) extra.push(`tên đăng nhập ${auditStr(a.username)}`);
+        if (a.hasTimesheet === false) extra.push('không chấm công cá nhân');
+        return [`Tạo tài khoản${extra.length ? ` (${extra.join(', ')})` : ''}`];
+      }
+      case 'account_update':
+        return auditAccountUpdateLines(b, a);
+      case 'password_reset':
+        return ['Đặt lại mật khẩu'];
+      case 'password_change':
+        return ['Tự đổi mật khẩu'];
+      case 'account_delete': {
+        const extra = [];
+        if (b.username) extra.push(auditStr(b.username));
+        if (b.role) extra.push(AUDIT_ACCOUNT_ROLE_LABELS[b.role] || auditStr(b.role));
+        return [`Xóa tài khoản${extra.length ? ` (${extra.join(', ')})` : ''}`];
+      }
+      default:
+        return [`Thay đổi: ${auditStr(e.action) || '(không rõ)'}`];
+    }
+  }
+
+  /** Gom các dòng liên tiếp cùng (txid, targetName, workDate) thành 1 khối */
+  function auditGroupEntries(entries) {
+    const moves = auditBuildMoves(entries);
+    const groups = [];
+    (entries || []).forEach((e) => {
+      if (!e) return;
+      const last = groups[groups.length - 1];
+      if (last && last.txid === e.txid && last.targetName === (e.targetName || null) && last.workDate === (e.workDate || null)) {
+        last.entries.push(e);
+      } else {
+        groups.push({ txid: e.txid, targetName: e.targetName || null, workDate: e.workDate || null, entries: [e] });
+      }
+    });
+    groups.forEach((g) => {
+      // máy chủ trả mới → cũ; trong 1 khối cho đọc theo thứ tự đã xảy ra
+      g.lines = [];
+      g.entries
+        .slice()
+        .reverse()
+        .forEach((e) => auditEntryLines(e, moves).forEach((l) => g.lines.push(l)));
+      g.head = g.entries[0];
+    });
+    return groups;
+  }
+
+  function auditGroupsHtml(entries, showTarget) {
+    return auditGroupEntries(entries)
+      .map((g) => {
+        const h = g.head;
+        const role = AUDIT_ACTOR_ROLE_LABELS[h.actorRole] ? ` (${AUDIT_ACTOR_ROLE_LABELS[h.actorRole]})` : '';
+        const actor = h.actorName ? `${auditStr(h.actorName)}${role}` : 'SQL Editor';
+        const place = showTarget
+          ? [g.targetName ? auditStr(g.targetName) : '', g.workDate ? `ngày ${auditStr(g.workDate)}` : ''].filter(Boolean).join(' ')
+          : '';
+        const target = place ? ` · ${place}` : '';
+        return `<div class="audit-group"><div class="audit-head">${escapeHtml(`${auditStr(h.atVn)} · ${actor}${target}`)}</div><ul class="audit-lines">${g.lines
+          .map((l) => `<li>${escapeHtml(l)}</li>`)
+          .join('')}</ul></div>`;
+      })
+      .join('');
+  }
+
+  /** Chuẩn hóa kết quả RPC → { ok, entries, more } | { ok:false, message, unauthorized } */
+  function auditNormalizeResult(res) {
+    if (!res || !res.ok) {
+      if (res && (res.hint === 'unauthorized' || res.hint === 'inactive')) {
+        return { ok: false, unauthorized: true, message: res.message };
+      }
+      if (res && res.hint === 'forbidden') return { ok: false, message: 'Chỉ Quản đốc xem được Lịch sử sửa đổi.' };
+      if (res && res.auditMissing) return { ok: false, message: res.message || AUDIT_FALLBACK_MISSING };
+      return { ok: false, message: (res && res.message) || 'Không tải được Lịch sử sửa đổi.' };
+    }
+    const d = res.data;
+    if (!d || d.ok === false || !Array.isArray(d.entries)) {
+      return { ok: false, message: (d && d.message) || 'Máy chủ trả về dữ liệu không đúng.' };
+    }
+    return { ok: true, entries: d.entries, more: Boolean(d.more) };
+  }
+
+  function auditNoteHtml(text) {
+    return `<div class="audit-note">${escapeHtml(text)}</div>`;
+  }
+
+  // ---- (A) Mục "Lịch sử sửa ngày này" trong hộp Chi tiết công ngày ----
+  let auditModalSeq = 0; // kết quả về muộn của ô khác không được vẽ vào ô đang mở
+  let auditModalLoadedFor = '';
+
+  function auditEnabled() {
+    return Boolean(REMOTE_MODE && remoteClient && state.authRole === 'ADMIN' && remote.token);
+  }
+
+  function setupQuickAudit() {
+    auditModalSeq += 1;
+    auditModalLoadedFor = '';
+    const box = document.getElementById('matrixQuickAudit');
+    const body = document.getElementById('matrixQuickAuditBody');
+    if (box) {
+      box.style.display = auditEnabled() ? '' : 'none';
+      box.open = false;
+    }
+    if (body) body.innerHTML = '';
+  }
+
+  function isQuickModalOpen() {
+    const m = document.getElementById('modalMatrixCellQuick');
+    return Boolean(m && m.classList.contains('open'));
+  }
+
+  function loadQuickAudit(force) {
+    if (!auditEnabled()) return;
+    const emp = state.quickCellEmp;
+    const date = state.quickCellDate;
+    const box = document.getElementById('matrixQuickAudit');
+    const body = document.getElementById('matrixQuickAuditBody');
+    if (!box || !body || !box.open || !emp || !date) return;
+    const key = `${emp}|${date}`;
+    if (!force && auditModalLoadedFor === key) return;
+    auditModalLoadedFor = key;
+    const seq = (auditModalSeq += 1);
+    if (!force || !body.innerHTML) body.innerHTML = auditNoteHtml('Đang tải…');
+    const iso = vnDateToIsoDate(date);
+    remoteQueue(() => remoteClient.auditList(remote.token, { from: iso, to: iso, employee: emp, limit: 30 }))
+      .catch(() => ({ ok: false, message: 'Không tải được Lịch sử sửa đổi.' }))
+      .then((res) => {
+        if (seq !== auditModalSeq || state.quickCellEmp !== emp || state.quickCellDate !== date) return;
+        const r = auditNormalizeResult(res);
+        if (r.unauthorized) {
+          remoteForceLogout(r.message);
+          return;
+        }
+        if (!r.ok) {
+          auditModalLoadedFor = ''; // mở lại sẽ thử tải lại
+          body.innerHTML = auditNoteHtml(r.message);
+          return;
+        }
+        body.innerHTML = r.entries.length
+          ? auditGroupsHtml(r.entries, false) + (r.more ? auditNoteHtml('Còn nữa: bấm "Xem tất cả ở tab Lịch sử".') : '')
+          : auditNoteHtml('Chưa có sửa đổi nào được ghi cho ngày này.');
+      });
+  }
+
+  function jumpQuickAuditToHistoryTab() {
+    const emp = state.quickCellEmp;
+    const iso = vnDateToIsoDate(state.quickCellDate || '');
+    if (!emp) return;
+    document.getElementById('modalMatrixCellQuick')?.classList.remove('open');
+    state.activeExcelSheet = 'SHEET_HISTORY';
+    state.adminFilterEmp = emp;
+    setAdminFilterDay(iso); // đổi sang tháng của ngày đó nếu cần, rồi vẽ lại
+  }
+
+  // ---- (B) Tab "Lịch sử sửa đổi" ----
+  const auditTab = { key: '', filter: null, entries: [], more: false, loading: false, message: '', seq: 0 };
+
+  function auditTabFilter() {
+    let from;
+    let to;
+    if (getAdminFilterDayVn()) {
+      from = state.adminFilterDay;
+      to = state.adminFilterDay;
+    } else {
+      const [y, m] = getSelectedMonthKey().split('-').map(Number);
+      from = `${y}-${pad2(m)}-01`;
+      to = `${y}-${pad2(m)}-${pad2(new Date(y, m, 0).getDate())}`;
+    }
+    const employee = state.adminFilterEmp && state.adminFilterEmp !== 'ALL' ? state.adminFilterEmp : null;
+    return { from, to, employee };
+  }
+
+  function fetchAuditTab(append) {
+    const filter = auditTab.filter;
+    const key = auditTab.key;
+    const beforeId = append && auditTab.entries.length ? auditTab.entries[auditTab.entries.length - 1].id : null;
+    const seq = (auditTab.seq += 1);
+    auditTab.loading = true;
+    auditTab.message = '';
+    remoteQueue(() =>
+      remoteClient.auditList(remote.token, {
+        from: filter.from,
+        to: filter.to,
+        employee: filter.employee,
+        beforeId,
+        limit: AUDIT_PAGE_SIZE
+      })
+    )
+      .catch(() => ({ ok: false, message: 'Không tải được Lịch sử sửa đổi.' }))
+      .then((res) => {
+        if (seq !== auditTab.seq || key !== auditTab.key) return;
+        auditTab.loading = false;
+        const r = auditNormalizeResult(res);
+        if (r.unauthorized) {
+          remoteForceLogout(r.message);
+          return;
+        }
+        if (!r.ok) {
+          auditTab.message = r.message;
+        } else {
+          auditTab.entries = append ? auditTab.entries.concat(r.entries) : r.entries;
+          auditTab.more = r.more;
+        }
+        renderAuditHistorySheet();
+      });
+  }
+
+  function auditTabLoadMore() {
+    if (auditTab.loading || !auditTab.more || !auditTab.entries.length) return;
+    fetchAuditTab(true);
+    renderAuditHistorySheet();
+  }
+
+  function auditTabReload() {
+    auditTab.key = '';
+    renderAuditHistorySheet();
+  }
+
+  /** Chạy mỗi lần vẽ lại bảng quản đốc, nhưng CHỈ gọi máy chủ khi tab đang mở và bộ lọc đổi */
+  function renderAuditHistorySheet() {
+    const host = document.getElementById('sheetViewHistory');
+    if (!host || state.activeExcelSheet !== 'SHEET_HISTORY') return;
+    if (!REMOTE_MODE) {
+      host.innerHTML = auditNoteHtml('Lịch sử sửa đổi chỉ có khi kết nối máy chủ (Supabase).');
+      return;
+    }
+    if (!auditEnabled()) {
+      host.innerHTML = auditNoteHtml('Chỉ Quản đốc xem được Lịch sử sửa đổi.');
+      return;
+    }
+    const filter = auditTabFilter();
+    const key = JSON.stringify(filter);
+    if (auditTab.key !== key) {
+      auditTab.key = key;
+      auditTab.filter = filter;
+      auditTab.entries = [];
+      auditTab.more = false;
+      fetchAuditTab(false);
+    }
+    const f = auditTab.filter;
+    const scope = f.from === f.to ? `ngày ${isoDateToVnDate(f.from)}` : `tháng ${f.from.slice(5, 7)}/${f.from.slice(0, 4)}`;
+    let html =
+      `<div class="audit-note">Đang xem: ${escapeHtml(scope)} · ${escapeHtml(f.employee ? `nhân viên ${f.employee}` : 'tất cả nhân viên')}. ` +
+      'Dùng ô Tháng, Ngày và Nhân viên ở trên để lọc. ' +
+      '<button type="button" class="slot-mini-btn" data-audit-reload="1">Tải lại</button></div>' +
+      auditNoteHtml('Thay đổi tài khoản của người không chấm công / đã xóa: chọn Nhân viên = Tất cả');
+    if (auditTab.message) html += auditNoteHtml(auditTab.message);
+    if (auditTab.entries.length) {
+      html += `<div class="audit-box">${auditGroupsHtml(auditTab.entries, true)}</div>`;
+    } else if (!auditTab.loading && !auditTab.message) {
+      html += auditNoteHtml('Chưa có sửa đổi nào trong phạm vi đã chọn.');
+    }
+    if (auditTab.loading) html += auditNoteHtml('Đang tải…');
+    else if (auditTab.more) html += '<button type="button" class="action-btn" data-audit-more="1">Xem thêm</button>';
+    host.innerHTML = html;
+  }
+
+  /** Sau khi đẩy thay đổi lên máy chủ thành công: bỏ cache và tải lại phần đang mở */
+  function auditAfterPush() {
+    auditTab.key = '';
+    auditModalLoadedFor = ''; // mở lại mục đã thu gọn thì tải lại
+    if (state.activeExcelSheet === 'SHEET_HISTORY') renderAuditHistorySheet();
+    if (isQuickModalOpen()) loadQuickAudit(true);
   }
 
   /** Quản đốc đặt nghỉ / về sớm cho 1 ô bảng công (`patch` = { leave } hoặc { earlyHours }) */
@@ -6707,6 +7148,14 @@
     document.getElementById('btnMatrixQuickAddShift')?.addEventListener('click', () => {
       openAdminEditOvertimeModal(null, state.quickCellEmp, state.quickCellDate);
     });
+    document.getElementById('matrixQuickAudit')?.addEventListener('toggle', () => loadQuickAudit(false));
+    document.getElementById('btnMatrixQuickAuditAll')?.addEventListener('click', jumpQuickAuditToHistoryTab);
+    document.getElementById('sheetViewHistory')?.addEventListener('click', (e) => {
+      const t = e.target && e.target.closest ? e.target : null;
+      if (!t) return;
+      if (t.closest('[data-audit-more]')) auditTabLoadMore();
+      else if (t.closest('[data-audit-reload]')) auditTabReload();
+    });
     document.getElementById('btnMatrixQuickJumpSheet1')?.addEventListener('click', () => {
       if (!state.quickCellEmp) return;
       state.adminFilterEmp = state.quickCellEmp;
@@ -7068,6 +7517,7 @@
     remote.pendingCount = 0;
     state.serverConnected = true;
     updateSyncStatusUI();
+    auditAfterPush();
     return { ok: true, receipts };
   }
 
