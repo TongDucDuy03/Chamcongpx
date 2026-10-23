@@ -1154,6 +1154,17 @@
           </div>
         </form>
 
+        <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem;">
+          <input
+            type="search"
+            id="manageEmpSearch"
+            class="form-control"
+            placeholder="Tìm nhân viên theo tên hoặc tên đăng nhập..."
+            autocomplete="off"
+            style="flex: 1;"
+          />
+          <span id="manageEmpSearchCount" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;"></span>
+        </div>
         <div id="modalEmpListContainer" style="max-height: 340px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
           <!-- Render danh sách nhân viên kèm ô sửa Tên đăng nhập & Mật khẩu từ app.js -->
         </div>

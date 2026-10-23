@@ -161,6 +161,18 @@ language sql stable set search_path = '' as $$
   order by x.c
 $$;
 
+-- Ghi chú cho chủ dự án: Admin đã kết nối Telegram nhưng chưa tích "Nhận báo cáo quản lý" (nên không nhận báo cáo)
+create or replace function ot.telegram_unticked_note() returns text
+language sql stable set search_path = '' as $$
+  select coalesce(
+    ' Lưu ý: ' || string_agg(e.name, ', ' order by e.name)
+      || ' đã kết nối Telegram nhưng CHƯA tích "Nhận báo cáo quản lý" nên không nhận báo cáo. Vào web -> Nhân sự & Tài khoản -> tích ô đó -> Lưu.',
+    '')
+    from ot.employees e
+   where e.role = 'admin' and not e.notify_manager and e.tg_chat_id is not null
+     and (e.end_date is null or e.end_date >= ot.vn_today())
+$$;
+
 -- Dòng thêm cuối báo cáo khi còn thay đổi sau chốt chưa duyệt
 create or replace function ot.telegram_alert_line() returns text
 language plpgsql stable set search_path = '' as $$
@@ -246,7 +258,8 @@ begin
     end if;
   end loop;
   if cardinality(v_ids) = 0 then
-    raise exception 'Chưa có ai nhận báo cáo quản lý. Cho Admin bấm "Kết nối Telegram" trong web và bật "Nhận báo cáo quản lý", hoặc thêm chat id nhóm: select ot.telegram_setup(''TOKEN_CUA_BOT'', ''CHAT_ID'');';
+    raise exception '%', 'Chưa có ai nhận báo cáo quản lý. Cho Admin bấm "Kết nối Telegram" trong web và bật "Nhận báo cáo quản lý", hoặc thêm chat id nhóm: select ot.telegram_setup(''TOKEN_CUA_BOT'', ''CHAT_ID'');'
+                         || ot.telegram_unticked_note();
   end if;
   update ot.telegram_config set last_request_id = v_ids[cardinality(v_ids)], last_request_ids = v_ids where id = 1;
   return v_ids[cardinality(v_ids)];
@@ -792,6 +805,7 @@ language plpgsql set search_path = '' as $$
 declare
   d date := coalesce(p_date, ot.vn_today() - 1);
   v_msg text;
+  v_to text;
 begin
   v_msg := ot.telegram_build_message(d);
   if v_msg is null then
@@ -800,7 +814,15 @@ begin
     v_msg := v_msg || ot.telegram_alert_line();
   end if;
   perform ot.telegram_send(E'[Gửi thử]\n' || v_msg);
-  return 'Đã gửi thử. Đợi vài giây rồi chạy: select ot.telegram_check();';
+  -- Ghi rõ đã gửi cho ai để dễ kiểm tra
+  select concat_ws(', ',
+           (select string_agg(e.name, ', ' order by e.name) from ot.employees e
+             where e.role = 'admin' and e.notify_manager and e.tg_chat_id is not null
+               and (e.end_date is null or e.end_date >= ot.vn_today())),
+           (select 'nhóm chung' from ot.telegram_config t where t.id = 1 and t.chat_id <> ''))
+    into v_to;
+  return 'Đã gửi thử báo cáo ngày ' || to_char(d, 'DD/MM/YYYY') || ' tới: ' || v_to
+         || '. Đợi vài giây rồi chạy: select ot.telegram_check();' || ot.telegram_unticked_note();
 end $$;
 
 -- Xem lần gửi gần nhất Telegram trả lời thế nào

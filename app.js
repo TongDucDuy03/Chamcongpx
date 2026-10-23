@@ -6064,6 +6064,8 @@
   }
 
   function openManageEmployeesModal() {
+    const search = document.getElementById('manageEmpSearch');
+    if (search) search.value = '';
     renderManageEmployeesList();
     document.getElementById('modalManageEmployees')?.classList.add('open');
   }
@@ -6090,6 +6092,9 @@
         tgCell = '<div class="emp-tg-cell muted">Chỉ dùng khi kết nối máy chủ</div>';
       } else if (e.telegramLinked) {
         tgCell = `<div class="emp-tg-cell linked">Đã kết nối: ${escapeHtml(e.telegramName || '')}</div>`;
+        if (isAdminRole && !e.notifyManager) {
+          tgCell += '<div class="emp-tg-cell warn">Chưa tích "Nhận báo cáo quản lý" nên không nhận báo cáo hằng ngày</div>';
+        }
       } else {
         tgCell = '<div class="emp-tg-cell muted">Chưa kết nối</div>';
       }
@@ -6101,7 +6106,7 @@
       const isRescue = String(e.username || '').toLowerCase() === 'admin'; // tài khoản quản trị gốc (cứu hộ)
       const canRemove = !(e.hasRecords || state.records.some((r) => r.employeeName === e.name)) && !isAdminRole && !isSelf && !isRescue;
       return `
-        <div class="emp-card" data-name="${nameAttr}">
+        <div class="emp-card" data-name="${nameAttr}" data-search="${escapeHtml(slugifyVietnamese(e.name) + ' ' + slugifyVietnamese(e.username || ''))}">
           <div class="emp-card-head">
             <span class="emp-card-no">${i + 1}.</span>
             <span class="emp-card-name">${escapeHtml(e.name)}</span>
@@ -6160,7 +6165,25 @@
           </div>
         </div>`;
     });
-    return `<div class="emp-list">${items.join('')}</div>`;
+    return `<div class="emp-list">${items.join('')}<div class="emp-search-empty" hidden>Không tìm thấy nhân viên nào.</div></div>`;
+  }
+
+  /** Ẩn các thẻ không khớp ô tìm kiếm (tên / tên đăng nhập, gõ có dấu hay không dấu đều được) */
+  function applyManageEmpFilter() {
+    const container = document.getElementById('modalEmpListContainer');
+    const countEl = document.getElementById('manageEmpSearchCount');
+    if (!container) return;
+    const q = slugifyVietnamese(document.getElementById('manageEmpSearch')?.value || '');
+    const cards = container.querySelectorAll('.emp-card');
+    let shown = 0;
+    cards.forEach((card) => {
+      const match = !q || (card.getAttribute('data-search') || '').includes(q);
+      card.hidden = !match;
+      if (match) shown++;
+    });
+    const empty = container.querySelector('.emp-search-empty');
+    if (empty) empty.hidden = shown > 0;
+    if (countEl) countEl.textContent = q ? `${shown}/${cards.length} người` : `${cards.length} người`;
   }
 
   function renderManageEmployeesList() {
@@ -6168,8 +6191,9 @@
     if (!container) return;
 
     container.innerHTML = buildManageEmployeesHtml();
+    applyManageEmpFilter();
 
-    // Đổi quyền sang Công nhân thì tắt ô "Nhận báo cáo quản lý" (công nhân không nhận báo cáo quản lý)
+    // Đổi quyền sang Admin thì tự tích "Nhận báo cáo quản lý"; sang Công nhân thì tắt ô này (công nhân không nhận báo cáo quản lý)
     container.querySelectorAll('.emp-role-select').forEach((sel) => {
       sel.addEventListener('change', () => {
         const card = sel.closest('.emp-card');
@@ -6177,7 +6201,7 @@
         if (!mgr) return;
         const isAdminNow = sel.value === 'admin';
         mgr.disabled = !isAdminNow;
-        if (!isAdminNow) mgr.checked = false;
+        mgr.checked = isAdminNow;
         mgr.closest('.emp-check')?.classList.toggle('is-disabled', !isAdminNow);
       });
     });
@@ -7238,6 +7262,7 @@
     document.getElementById('btnDoneManageEmp')?.addEventListener('click', () => {
       document.getElementById('modalManageEmployees')?.classList.remove('open');
     });
+    document.getElementById('manageEmpSearch')?.addEventListener('input', applyManageEmpFilter);
     document.getElementById('newEmpName')?.addEventListener('input', (e) => {
       const userInp = document.getElementById('newEmpUsername');
       if (!userInp) return;

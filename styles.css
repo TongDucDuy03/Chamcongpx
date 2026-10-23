@@ -2433,6 +2433,8 @@ tr.data-row.rest-day-row td { background: #fff1f2; }
 .emp-tg-cell { font-size: 0.8rem; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
 .emp-tg-cell.linked { color: #047857; }
 .emp-tg-cell.muted { color: var(--text-muted); font-weight: 500; }
+.emp-tg-cell.warn { color: #b45309; font-weight: 500; font-size: 0.72rem; margin-top: 0.15rem; }
+.emp-search-empty { padding: 1rem; text-align: center; color: var(--text-muted); font-size: 0.8rem; }
 .emp-card .emp-actions { justify-content: flex-start; }
 .worker-user-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
 @media (max-width: 420px) { .worker-user-row { flex-wrap: wrap; } }
