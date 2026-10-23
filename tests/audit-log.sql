@@ -229,10 +229,25 @@ from (select pg_temp.last('status_set') l) x;
 select pg_temp.n() as n0 \gset
 select pg_temp.push('an', jsonb_build_object('statusUpsert', jsonb_build_array(
   jsonb_build_object('key', pg_temp.dmy(-3) || '::An', 'leave', '', 'earlyHours', 0)))) as e \gset
-select pg_temp.t('Xóa nghỉ / về sớm (leave rỗng, 0 giờ): status_clear với before',
-  :'e' = '' and pg_temp.n() = :n0 + 1 and l ->> 'action' = 'status_clear' and l -> 'before' ->> 'leave' = 'MORNING'
-  and (l -> 'before' ->> 'earlyHours')::numeric = 1.5 and l -> 'after' = 'null'::jsonb and (l ->> 'work_date')::date = ot.vn_today() - 3, :'e' || l::text)
-from (select pg_temp.last('status_clear') l) x;
+select pg_temp.t('Đổi sang đi làm đủ (leave rỗng, 0 giờ): vẫn giữ dòng báo công, status_set before {MORNING, 1.5} after {'''', 0}',
+  :'e' = '' and pg_temp.n() = :n0 + 1 and l ->> 'action' = 'status_set' and l -> 'before' ->> 'leave' = 'MORNING'
+  and (l -> 'before' ->> 'earlyHours')::numeric = 1.5 and l -> 'after' ->> 'leave' = '' and (l -> 'after' ->> 'earlyHours')::numeric = 0
+  and (l ->> 'work_date')::date = ot.vn_today() - 3
+  and exists (select 1 from ot.day_status s join ot.employees e on e.id = s.employee_id
+               where e.name = 'An' and s.work_date = ot.vn_today() - 3 and s.leave = '' and s.early_hours = 0), :'e' || l::text)
+from (select pg_temp.last('status_set') l) x;
+select pg_temp.n() as n0 \gset
+select pg_temp.push('an', jsonb_build_object('statusUpsert', jsonb_build_array(
+  jsonb_build_object('key', pg_temp.dmy(-6) || '::An', 'leave', '', 'earlyHours', 0)))) as e \gset
+select pg_temp.t('Báo đi làm đủ ngày chưa có gì: thêm dòng day_status, status_set before null',
+  :'e' = '' and pg_temp.n() = :n0 + 1 and l -> 'before' = 'null'::jsonb and l -> 'after' ->> 'leave' = ''
+  and exists (select 1 from ot.day_status s join ot.employees e on e.id = s.employee_id
+               where e.name = 'An' and s.work_date = ot.vn_today() - 6), :'e' || l::text)
+from (select pg_temp.last('status_set') l) x;
+select pg_temp.push('an', jsonb_build_object('statusDelete', jsonb_build_array(pg_temp.dmy(-6) || '::An'))) as e \gset
+select pg_temp.t('statusDelete ngày đi làm đủ: xóa dòng (về chưa báo công)',
+  :'e' = '' and not exists (select 1 from ot.day_status s join ot.employees e on e.id = s.employee_id
+                             where e.name = 'An' and s.work_date = ot.vn_today() - 6), :'e');
 select pg_temp.push('an', jsonb_build_object('statusUpsert', jsonb_build_array(
   jsonb_build_object('key', pg_temp.dmy(-3) || '::An', 'leave', 'FULL', 'earlyHours', 0)))) as e \gset
 select pg_temp.n() as n0 \gset

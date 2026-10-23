@@ -1032,6 +1032,16 @@
 
   const LEAVE_LABELS = { MORNING: 'Nghỉ sáng', AFTERNOON: 'Nghỉ chiều', FULL: 'Nghỉ cả ngày (P)' };
   const MAX_EARLY_HOURS = 8;
+  // Từ ngày này (YYYY-MM-DD) ngày thường phải tự báo công (kể cả đi làm đủ, không tăng ca); chưa báo thì ô công để trống, không tính công.
+  // Các ngày trước đó giữ cách cũ: không báo gì = X (1 công).
+  const REPORT_REQUIRED_FROM = '2026-10-23';
+  const NOT_REPORTED_LABEL = 'Chưa báo';
+
+  /** Ngày `dd/mm/yyyy` có bắt buộc báo công không (ngày thường, từ REPORT_REQUIRED_FROM tới hôm nay) */
+  function isReportRequiredDay(workDateVn) {
+    const iso = vnDateToIsoDate(workDateVn);
+    return Boolean(iso) && iso >= REPORT_REQUIRED_FROM && iso <= localIsoToday() && !isRestDayVn(workDateVn);
+  }
 
   function normalizeDayStatus(s) {
     const leave = s && LEAVE_LABELS[s.leave] ? s.leave : '';
@@ -1045,16 +1055,29 @@
     return normalizeDayStatus((state.dayStatuses || {})[`${workDateVn}::${empName}`]);
   }
 
-  /** Ghi nghỉ / về sớm (đi làm đủ và không về sớm thì xóa hẳn). Trả về true nếu có thay đổi. */
+  /**
+   * Ghi báo công trong ngày: nghỉ / về sớm, hoặc `{ leave: '', earlyHours: 0 }` = đi làm đủ (vẫn lưu, để biết đã báo).
+   * `status` = null: xóa hẳn (coi như chưa báo). Trả về true nếu có thay đổi.
+   */
   function setDayStatus(empName, workDateVn, status) {
     if (!state.dayStatuses || typeof state.dayStatuses !== 'object') state.dayStatuses = {};
     const key = `${workDateVn}::${empName}`;
+    const had = Object.prototype.hasOwnProperty.call(state.dayStatuses, key);
+    if (status === null) {
+      if (!had) return false;
+      delete state.dayStatuses[key];
+      return true;
+    }
     const before = getDayStatus(empName, workDateVn);
     const next = normalizeDayStatus(status);
-    if (before.leave === next.leave && before.earlyHours === next.earlyHours) return false;
-    if (!next.leave && !next.earlyHours) delete state.dayStatuses[key];
-    else state.dayStatuses[key] = next;
+    if (had && before.leave === next.leave && before.earlyHours === next.earlyHours) return false;
+    state.dayStatuses[key] = next;
     return true;
+  }
+
+  /** Đã có dòng báo công trong ngày (kể cả đi làm đủ) */
+  function hasDayStatusEntry(empName, workDateVn) {
+    return Boolean(state.dayStatuses) && Object.prototype.hasOwnProperty.call(state.dayStatuses, `${workDateVn}::${empName}`);
   }
 
   /** VD: 'Nghỉ sáng • Về sớm 1h' ('' nếu đi làm đủ) */
@@ -1115,10 +1138,13 @@
     totalHours = Math.round(totalHours * 100) / 100;
     const status = isRest ? normalizeDayStatus(null) : getDayStatus(empName, workDateVn);
     const hasStatus = Boolean(status.leave || status.earlyHours);
+    // Đã báo công: có ca, hoặc có dòng báo trong ngày (nghỉ / về sớm / đi làm đủ). Ngày nghỉ CN/lễ chỉ tính ca.
+    const reported = allRecs.length > 0 || (!isRest && hasDayStatusEntry(empName, workDateVn));
+    const missing = !reported && isReportRequiredDay(workDateVn);
     let code = '';
     if (isRest) code = totalHours > 0 ? `${formatHoursClean(totalHours)}h` : '';
     else if (totalHours > 0 || hasStatus) code = composeDayCode(totalHours, status);
-    const codeLabel = code || (isRest ? 'Nghỉ' : 'X');
+    const codeLabel = code || (isRest ? 'Nghỉ' : missing ? NOT_REPORTED_LABEL : 'X');
     const shortSlots = shortParts.join(' • ');
 
     return {
@@ -1133,8 +1159,10 @@
       leave: status.leave,
       earlyHours: status.earlyHours,
       hasStatus,
+      reported,
+      missing,
       statusStr: describeDayStatus(status),
-      workCredit: isRest ? 0 : status.leave === 'FULL' ? 0 : status.leave ? 0.5 : 1
+      workCredit: isRest || missing ? 0 : status.leave === 'FULL' ? 0 : status.leave ? 0.5 : 1
     };
   }
 
@@ -3222,8 +3250,8 @@
       if (unsupportedReason) {
         existingNotice.style.display = 'block';
         existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> Quản đốc đã nhập chi tiết: <strong>${escapeHtml(existingSummary.detailStr)}</strong>. ${escapeHtml(unsupportedReason)}, form báo nhanh không sửa đúng được nên đã khóa nút Lưu. Cần sửa ngày này thì nhờ Quản đốc.`;
-      } else if (existingSummary.records.length > 0 || existingSummary.hasStatus) {
-        const savedParts = [existingSummary.statusStr, existingSummary.slotBreakdown].filter(Boolean).join(' • ');
+      } else if (existingSummary.reported) {
+        const savedParts = [existingSummary.statusStr, existingSummary.slotBreakdown].filter(Boolean).join(' • ') || 'Đi làm đủ, không tăng ca';
         existingNotice.style.display = 'block';
         existingNotice.innerHTML = `Ngày <strong>${escapeHtml(daily.workDate)}</strong> bạn đã lưu <strong>${escapeHtml(existingSummary.codeLabel)} (${escapeHtml(savedParts)})</strong>. Bạn có thể chỉnh lại bên dưới rồi bấm Lưu để cập nhật.`;
       } else {
@@ -3252,7 +3280,7 @@
     if (slotsSumEl) slotsSumEl.textContent = daily.slotsSummaryText;
     if (colHours) colHours.textContent = codeWithHours;
 
-    const hasExistingDay = existingSummary.records.length > 0 || existingSummary.hasStatus;
+    const hasExistingDay = existingSummary.reported;
     if (btnSubmitText && !state.isWaitingServerAck) {
       const codeText =
         daily.totalHours > 0 ? `${daily.codeLabel} • ${formatHoursClean(daily.totalHours)} giờ` : daily.codeLabel;
@@ -3260,14 +3288,18 @@
         btnSubmitText.textContent =
           daily.totalHours > 0 || daily.hasStatus
             ? `Cập nhật ngày ${daily.workDate} (${codeText})`
-            : `Lưu: bỏ hết tăng ca ngày ${daily.workDate}`;
+            : daily.isRestDay
+            ? `Lưu: bỏ hết tăng ca ngày ${daily.workDate}`
+            : `Cập nhật ngày ${daily.workDate}: đi làm đủ, không tăng ca (X)`;
       } else {
         btnSubmitText.textContent =
           daily.totalHours > 0
             ? `Lưu báo tăng ca ngày ${daily.workDate} (${codeText})`
             : daily.hasStatus
             ? `Lưu ngày ${daily.workDate} (${codeText})`
-            : `Vui lòng tích chọn ít nhất 1 ca tăng ca`;
+            : daily.isRestDay
+            ? `Vui lòng tích chọn ít nhất 1 ca tăng ca`
+            : `Báo công ngày ${daily.workDate}: đi làm đủ, không tăng ca (X)`;
       }
     }
 
@@ -3288,7 +3320,8 @@
     // Nút Lưu: khóa khi chưa chọn gì để tránh bấm nhầm
     const submitBtn = document.getElementById('btnSubmitMobileOvertime');
     if (submitBtn && !state.isWaitingServerAck) {
-      const nothingChosen = daily.checkedSlots.length === 0 && !daily.hasStatus && !hasExistingDay;
+      // Ngày thường luôn lưu được (không tích ca = báo đi làm đủ); ngày nghỉ phải tích "Tôi có đi làm"
+      const nothingChosen = daily.isRestDay && daily.checkedSlots.length === 0 && !hasExistingDay;
       const noTimesheet = personalHasNoTimesheet();
       submitBtn.disabled = nothingChosen || Boolean(unsupportedReason) || noTimesheet;
       if (noTimesheet && btnSubmitText) {
@@ -3371,7 +3404,7 @@
     if (!opts.skipExisting && !opts.keepDate) {
       const empNow = currentWorkerName();
       const todaySum = empNow ? getEmployeeDaySummary(empNow, isoDateToVnDate(today)) : null;
-      if (todaySum && (todaySum.records.length > 0 || todaySum.hasStatus)) {
+      if (todaySum && todaySum.reported) {
         loadExistingDayIntoMobileForm(empNow, today, false);
       }
     }
@@ -3430,7 +3463,7 @@
 
   async function deleteWorkerDay(empName, vnDate) {
     const beforeSummary = getEmployeeDaySummary(empName, vnDate);
-    if (beforeSummary.records.length === 0 && !beforeSummary.hasStatus) return false;
+    if (!beforeSummary.reported) return false;
     const locked = Boolean(state.lockedDays && state.lockedDays[vnDate]?.locked);
     const msg = locked
       ? `Ngày ${vnDate} đã được Quản đốc chốt công. Xóa thì ô công của bạn sẽ bị bôi vàng để Quản đốc kiểm tra lại.\n\nBạn chắc chắn muốn xóa báo ngày này (tăng ca, nghỉ, về sớm)?`
@@ -3692,10 +3725,11 @@
       const isFuture = iso > todayIso;
       const sum = getEmployeeDaySummary(empName, vn);
       const hasOt = sum.totalHours > 0;
-      const hasMark = hasOt || sum.hasStatus;
+      const hasMark = sum.reported;
       const isRest = isRestDayVn(vn);
       const holidayName = getHolidayName(vn);
       const employed = isEmployedOn(empObj, iso);
+      const isMissing = employed && sum.missing;
       const lockInfo = state.lockedDays[vn];
       const isLocked = Boolean(lockInfo && lockInfo.locked);
       const hasWarn = Boolean(state.dayModAlerts && state.dayModAlerts[`${vn}::${empName}`]);
@@ -3704,7 +3738,7 @@
       if (!employed) {
         code = '';
       } else if (hasMark) {
-        code = sum.code;
+        code = sum.code || sum.codeLabel;
         if (hasOt) {
           otDays += 1;
           totalHours += sum.totalHours;
@@ -3715,8 +3749,8 @@
       } else if (!isFuture) {
         if (isRest) {
           code = holidayName ? 'Lễ' : 'CN';
-        } else {
-          code = 'X';
+        } else if (!isMissing) {
+          code = 'X'; // ngày trước khi bắt buộc báo công
           workDays += 1;
         }
       }
@@ -3724,6 +3758,7 @@
       const cls = ['cal-cell'];
       if (hasOt) cls.push('has-ot');
       if (employed && sum.hasStatus) cls.push('leave');
+      if (isMissing) cls.push('missing');
       if (isRest && holidayName) cls.push('holiday');
       else if (isSunday) cls.push('sunday');
       if (isFuture) cls.push('future');
@@ -3738,10 +3773,13 @@
 
       if (employed && (hasMark || (!isFuture && !isRest))) {
         const otText = hasOt ? sum.detailStr + (isRest ? ` (${getRestDayLabel(vn)})` : '') : '';
-        const detailText = [sum.statusStr, otText].filter(Boolean).join(' • ') || 'Không tăng ca';
+        const detailText = isMissing
+          ? 'Chưa báo công'
+          : [sum.statusStr, otText].filter(Boolean).join(' • ') || 'Không tăng ca';
         const rowCls = ['cal-list-row'];
         if (hasOt) rowCls.push('has-ot');
         if (sum.hasStatus) rowCls.push('leave');
+        if (isMissing) rowCls.push('missing');
         if (isRest) rowCls.push('rest');
         listRows += `<div class="${rowCls.join(' ')}" data-iso="${iso}"><span class="cal-list-date">${dowNames[dow]} ${pad2(day)}/${pad2(month)}</span><strong class="cal-list-code">${escapeHtml(code)}</strong><span class="cal-list-detail">${escapeHtml(detailText)}</span></div>`;
       }
@@ -3776,9 +3814,14 @@
         detail.style.display = 'block';
         const restNote = isRestDayVn(vn) ? ` (${escapeHtml(getRestDayLabel(vn))} - ngày nghỉ)` : '';
         const dayText = [sum.statusStr, sum.totalHours > 0 ? sum.detailStr : ''].filter(Boolean).join(' • ');
+        const emptyText = sum.missing
+          ? 'Bạn chưa báo công ngày này. Đi làm bình thường cũng cần bấm báo công.'
+          : sum.reported
+          ? 'Đi làm đủ, không tăng ca.'
+          : 'Chưa báo tăng ca ngày này.';
         detail.innerHTML = `<div><strong>Ngày ${escapeHtml(vn)}${restNote}: ${escapeHtml(sum.code || sum.codeLabel)}</strong></div>
-          <div class="sub-meta-text">${dayText ? escapeHtml(dayText) : 'Chưa báo tăng ca ngày này.'}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
-          ${state.calSelectedIso > localIsoToday() ? '<div class="sub-meta-text" style="margin-top:0.4rem;">Chưa tới ngày này nên chưa báo được.</div>' : `<button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;min-height:44px;">${sum.totalHours > 0 || sum.hasStatus ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo tăng ca / nghỉ ngày này')}</button>`}`;
+          <div class="sub-meta-text">${dayText ? escapeHtml(dayText) : emptyText}${locked ? ' • Quản đốc đã chốt công' : ''}</div>
+          ${state.calSelectedIso > localIsoToday() ? '<div class="sub-meta-text" style="margin-top:0.4rem;">Chưa tới ngày này nên chưa báo được.</div>' : `<button type="button" id="btnCalEditDay" class="action-btn primary" style="margin-top:0.5rem;min-height:44px;">${sum.reported ? 'Sửa ngày này' : (isRestDayVn(vn) ? 'Báo đi làm ngày này' : 'Báo công ngày này')}</button>`}`;
       } else {
         detail.style.display = 'none';
       }
@@ -3931,14 +3974,15 @@
       }
     }
 
-    // Không tích ca nào: lưu nghỉ / về sớm (nếu có) và bỏ hết tăng ca đã báo của ngày đó
+    // Không tích ca nào: ngày thường = báo công (đi làm đủ / nghỉ / về sớm) và bỏ hết tăng ca đã báo của ngày đó;
+    // ngày nghỉ = bỏ hết ca đã báo
     if (daily.checkedSlots.length === 0) {
-      if (beforeSummary.records.length > 0 || daily.hasStatus || beforeSummary.hasStatus) {
+      if (!daily.isRestDay || beforeSummary.records.length > 0) {
         const removedCount = beforeSummary.records.length;
         state.records = state.records.filter(
           (r) => !(r.employeeName === activeWorkerName && r.workDate === daily.workDate)
         );
-        setDayStatus(activeWorkerName, daily.workDate, dayStatus);
+        setDayStatus(activeWorkerName, daily.workDate, daily.isRestDay ? null : dayStatus);
         if (isDayLocked) {
           checkAndTriggerPostLockAlert(activeWorkerName, daily.workDate, beforeSummary);
         }
@@ -3956,11 +4000,12 @@
         state.calSelectedIso = daily.isoDate;
         renderAll();
         const afterSum = getEmployeeDaySummary(activeWorkerName, daily.workDate);
+        const removedText = removedCount ? `, bỏ ${removedCount} ca tăng ca đã báo` : '';
         showToast(
-          afterSum.hasStatus
-            ? `Đã lưu ngày <strong>${escapeHtml(daily.workDate)}</strong>: <strong>${escapeHtml(afterSum.codeLabel)}</strong> (${escapeHtml(afterSum.statusStr)})${removedCount ? `, bỏ ${removedCount} ca tăng ca đã báo` : ''}.`
-            : `Đã xóa các ca tăng ca ngày <strong>${escapeHtml(daily.workDate)}</strong> (Chuyển về công X).`,
-          afterSum.hasStatus ? 'success' : 'warn'
+          daily.isRestDay
+            ? `Đã xóa các ca ngày <strong>${escapeHtml(daily.workDate)}</strong>.`
+            : `Đã lưu ngày <strong>${escapeHtml(daily.workDate)}</strong>: <strong>${escapeHtml(afterSum.codeLabel)}</strong> (${escapeHtml(afterSum.statusStr || 'đi làm đủ, không tăng ca')})${removedText}.`,
+          daily.isRestDay || removedCount ? 'warn' : 'success'
         );
         return;
       }
@@ -4034,7 +4079,7 @@
     }
 
     state.lastSubmitServerMs = nowServerMs;
-    setDayStatus(activeWorkerName, daily.workDate, dayStatus);
+    setDayStatus(activeWorkerName, daily.workDate, daily.isRestDay ? null : dayStatus);
 
     // Nếu ngày này đã được Quản đốc chốt công -> kích hoạt cảnh báo bôi vàng nếu tổng giờ/ca thay đổi
     let triggeredYellow = false;
@@ -4634,6 +4679,14 @@
         });
         empEarlyHours = Math.round(empEarlyHours * 100) / 100;
 
+        // Số ngày thường chưa báo công trong tháng (tính tới hôm nay, chỉ ngày đang làm việc)
+        let empMissingDays = 0;
+        const dimForMissing = new Date(mxYear, mxMonth, 0).getDate();
+        for (let d = 1; d <= dimForMissing; d++) {
+          const dVn = `${pad2(d)}${monthSuffix}`;
+          if (isEmployedOn(emp, vnDateToIsoDate(dVn)) && getEmployeeDaySummary(emp.name, dVn).missing) empMissingDays++;
+        }
+
         const cellsHtml = dateColumns
           .map((dStr) => {
             const sum = getEmployeeDaySummary(emp.name, dStr);
@@ -4656,7 +4709,7 @@
                   data-date="${escapeHtml(dStr)}"
                   title="Sửa sau khi chốt công: ${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}${ch.changes.length ? `. ${escapeHtml(ch.changes.join('; '))}` : ''}. Bấm để xem/sửa nhanh."
                 >
-                  <span class="matrix-code-pill">${escapeHtml(sum.totalHours > 0 || sum.hasStatus ? sum.codeLabel : 'X (0h)')}</span>
+                  <span class="matrix-code-pill">${escapeHtml(sum.totalHours > 0 || sum.hasStatus || sum.missing ? sum.codeLabel : 'X (0h)')}</span>
                   <span class="matrix-diff-tag">${escapeHtml(ch.beforeCode)} → ${escapeHtml(ch.afterCode)}</span>
                   ${changeLines}${moreChanges}
                   <div>
@@ -4674,7 +4727,7 @@
               `;
             }
 
-            if (sum.totalHours > 0 || sum.hasStatus) {
+            if (sum.reported) {
               return `
                 <td
                   class="matrix-cell${sum.totalHours > 0 ? ' has-overtime' : ''}${leaveCls}${restCls}"
@@ -4693,6 +4746,16 @@
             }
             if (sum.isRest) {
               return `<td class="matrix-cell rest-col rest-day-col" data-emp="${escapeHtml(emp.name)}" data-date="${escapeHtml(dStr)}" title="${escapeHtml(getRestDayLabel(dStr))}: ngày nghỉ (Bấm để thêm ca nếu có đi làm)"><span class="matrix-empty-dot">–</span></td>`;
+            }
+            if (sum.missing) {
+              return `
+              <td
+                class="matrix-cell missing-cell${isTodayCell ? ' today-col-cell' : ''}"
+                data-emp="${escapeHtml(emp.name)}"
+                data-date="${escapeHtml(dStr)}"
+                title="${escapeHtml(emp.name)} — Ngày ${escapeHtml(dStr)}: chưa báo công, chưa tính công (Bấm để báo thay)"
+              ></td>
+            `;
             }
             return `
               <td
@@ -4723,6 +4786,7 @@
             <td class="matrix-summary-col leave-sum">${empEarlyHours > 0 ? `${formatHoursClean(empEarlyHours)}h` : '–'}</td>
             <td class="matrix-summary-col" style="color:#047857;">
               ${empOtDaysCount} công TC (+${formatHoursClean(empMonthTotalHours)}h)
+              ${empMissingDays > 0 ? `<div class="matrix-missing-sum">Chưa báo công: ${empMissingDays} ngày</div>` : ''}
             </td>
           </tr>
         `;
@@ -4832,18 +4896,22 @@
     }
     if (badgeEl) {
       badgeEl.textContent =
-        sum.totalHours > 0 || !sum.hasStatus ? `${sum.codeLabel} (${formatHoursClean(sum.totalHours)} giờ)` : sum.codeLabel;
+        sum.missing
+          ? `${sum.codeLabel} (chưa tính công)`
+          : sum.totalHours > 0 || !sum.hasStatus
+          ? `${sum.codeLabel} (${formatHoursClean(sum.totalHours)} giờ)`
+          : sum.codeLabel;
     }
-    // Nghỉ / về sớm của ngày (ngày nghỉ CN/lễ không có)
+    // Nghỉ / về sớm của ngày (ngày nghỉ CN/lễ không có). Chưa báo công: không nút nào sáng, bấm "Đủ ngày" = báo thay đi làm đủ
     const statusBox = document.getElementById('matrixQuickStatusBox');
     if (statusBox) statusBox.style.display = sum.isRest ? 'none' : '';
     const earlyStr = String(sum.earlyHours);
     const earlyPreset = ['0', '0.5', '1', '1.5', '2'].includes(earlyStr);
     document.querySelectorAll('#matrixQuickStatusBox [data-quick-leave]').forEach((b) => {
-      b.classList.toggle('active', (b.getAttribute('data-quick-leave') || '') === sum.leave);
+      b.classList.toggle('active', !sum.missing && (b.getAttribute('data-quick-leave') || '') === sum.leave);
     });
     document.querySelectorAll('#matrixQuickStatusBox [data-quick-early]').forEach((b) => {
-      b.classList.toggle('active', earlyPreset && b.getAttribute('data-quick-early') === earlyStr);
+      b.classList.toggle('active', !sum.missing && earlyPreset && b.getAttribute('data-quick-early') === earlyStr);
       b.disabled = sum.leave === 'FULL';
     });
     const earlyInput = document.getElementById('matrixQuickEarlyInput');
@@ -5086,6 +5154,7 @@
         return [`Nhận ca ${auditShiftTimes(a, day)} từ ${src}`];
       }
       case 'status_set': {
+        if (!e.before && !auditStr(a.leave) && !(Number(a.earlyHours || 0) > 0)) return ['Báo công: đi làm đủ'];
         const bl = e.before ? b.leave : '';
         const be = e.before ? b.earlyHours : 0;
         const lines = [];
@@ -5099,7 +5168,7 @@
         const parts = [];
         if (auditStr(b.leave)) parts.push(auditLeaveText(b.leave));
         if (Number(b.earlyHours || 0) > 0) parts.push(`về sớm ${auditEarlyText(b.earlyHours)}`);
-        return [`Bỏ nghỉ / về sớm${parts.length ? ` (${parts.join(', ')})` : ''}`];
+        return [parts.length ? `Bỏ nghỉ / về sớm (${parts.join(', ')})` : 'Xóa báo công (đi làm đủ)'];
       }
       case 'day_lock':
         return ['Chốt ngày'];
@@ -6800,7 +6869,7 @@
       const activeWorkerName = personalName();
       const vnDate = isoDateToVnDate(isoDate);
       const existingDay = getEmployeeDaySummary(activeWorkerName, vnDate);
-      const hasExisting = existingDay.records.length > 0 || existingDay.hasStatus;
+      const hasExisting = existingDay.reported;
       if (hasExisting) {
         loadExistingDayIntoMobileForm(activeWorkerName, isoDate, false);
       } else {

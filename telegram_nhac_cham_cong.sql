@@ -18,7 +18,8 @@
 --
 -- Bot làm gì:
 --   * Báo cáo hằng ngày cho mọi Admin bật "Nhận báo cáo quản lý" (và nhóm dùng chung nếu có): ai có chấm công
---     mà ngày hôm trước chưa báo gì (không có ca tăng ca, không báo nghỉ / về sớm). Hôm trước là Chủ nhật / ngày lễ thì không gửi.
+--     mà ngày hôm trước chưa báo công (không báo đi làm đủ, không có ca tăng ca, không báo nghỉ / về sớm).
+--     Hôm trước là Chủ nhật / ngày lễ thì không gửi.
 --   * Nhắc riêng từng người chưa báo công (nếu người đó bật "Nhận thông báo cá nhân" và đã kết nối Telegram).
 --   * Báo ngay cho Quản đốc khi có người sửa sau chốt công; báo lại cho người đó khi Quản đốc duyệt.
 -- =====================================================================
@@ -220,7 +221,7 @@ begin
     return null;
   end if;
   if cardinality(v_missing) = 0 then
-    return format('✅ %s: cả %s công nhân đều đã báo (tăng ca / nghỉ / về sớm).', v_day, v_total);
+    return format('✅ %s: cả %s công nhân đều đã báo công.', v_day, v_total);
   end if;
 
   -- Telegram giới hạn 4096 ký tự/tin: danh sách quá dài thì ghi "... và N người nữa"
@@ -234,7 +235,7 @@ begin
   end loop;
 
   return format(
-    E'⏰ Nhắc chấm công tăng ca – %s\nCó %s/%s công nhân chưa báo gì (tăng ca / nghỉ / về sớm):%s\n\nAi hôm đó đi làm bình thường, không tăng ca thì bỏ qua tên người đó.',
+    E'⏰ Nhắc báo công – %s\nCó %s/%s công nhân chưa báo công:%s\n\nNgày chưa báo công thì bảng công để trống, chưa được tính công.',
     v_day, cardinality(v_missing), v_total, v_list
   );
 end $$;
@@ -286,7 +287,7 @@ begin
   loop
     begin
       perform ot.tg_post(r.tg_chat_id, format(
-        '⏰ %s ơi, bạn chưa báo công ngày %s (tăng ca / nghỉ / về sớm). Nếu hôm đó đi làm bình thường, không tăng ca thì bỏ qua tin này.',
+        '⏰ %s ơi, bạn chưa báo công ngày %s. Đi làm bình thường cũng cần vào trang chấm công bấm báo công (đi làm đủ / tăng ca / nghỉ / về sớm), nếu không ngày đó sẽ không được tính công.',
         r.name, ot.tg_day_label(p_date)));
       n := n + 1;
     exception when others then
@@ -715,7 +716,7 @@ begin
 
   perform cron.schedule('nhac-cham-cong-telegram', format('%s %s * * *', m, (h + 17) % 24), 'select ot.telegram_daily_remind()');
   update ot.telegram_config set remind_time = v_time, enabled = true, updated_at = now() where id = 1;
-  return format('Bot sẽ nhắc lúc %s mỗi ngày (giờ Việt Nam) về những người chưa báo tăng ca ngày hôm trước.', v_time);
+  return format('Bot sẽ nhắc lúc %s mỗi ngày (giờ Việt Nam) về những người chưa báo công ngày hôm trước.', v_time);
 end $$;
 
 -- Lưu token bot (+ chat id nhóm dùng chung nếu có), rồi hẹn giờ nhắc (mặc định 14:00).

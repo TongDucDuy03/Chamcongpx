@@ -348,7 +348,7 @@ select pg_temp.t('Cài đặt cũ chạy lại file: tự điền tên bot mặc
 delete from net.calls;
 select ot.telegram_daily_remind();
 select pg_temp.t('Báo cáo hằng ngày vẫn gửi cho chat chung cũ (chưa ai kết nối)',
-  pg_temp.sent('-1009') like '⏰ Nhắc chấm công tăng ca – Thứ Sáu 16/10/2026%' and pg_temp.sent('-1009') like '%Có 2/2 công nhân%', pg_temp.sent('-1009'));
+  pg_temp.sent('-1009') like '⏰ Nhắc báo công – Thứ Sáu 16/10/2026%' and pg_temp.sent('-1009') like '%Có 2/2 công nhân%', pg_temp.sent('-1009'));
 select ot.telegram_setup('123456789:AAHabcdefghijklmnopqrstuvwxyz0123456');
 select pg_temp.t('telegram_setup chỉ token: GIỮ chat id đã lưu', chat_id = '-1009' and bot_username = 'pxkhuon_bot') from ot.telegram_config;
 select ot.telegram_setup('123456789:AAHabcdefghijklmnopqrstuvwxyz0123456', NULL, '15:00');
@@ -377,12 +377,12 @@ select pg_temp.t('Người nhận báo cáo: admin bật nhận + đã kết n�
   array(select ot.telegram_recipients()) = array['-1001', '9001', '9002'], array_to_string(array(select ot.telegram_recipients()), ','));
 select ot.telegram_daily_remind();
 select pg_temp.t('Báo cáo gửi cho 2 Quản đốc + chat chung (có chấm công: An, Bình, Chi; Chi đã báo)',
-  pg_temp.sent('9001') like E'⏰ Nhắc chấm công tăng ca – Thứ Sáu 16/10/2026\nCó 2/3 công nhân%1. An\n2. Bình%'
+  pg_temp.sent('9001') like E'⏰ Nhắc báo công – Thứ Sáu 16/10/2026\nCó 2/3 công nhân%1. An\n2. Bình%'
   and pg_temp.sent('9002') = pg_temp.sent('9001') and pg_temp.sent('-1001') = pg_temp.sent('9001') and pg_temp.sent('9001') not like '%📝%',
   pg_temp.sent('9001'));
 select pg_temp.t('Không gửi báo cáo cho admin tắt nhận, đã nghỉ việc', pg_temp.sent('9003') = '' and pg_temp.sent('9004') = '');
 select pg_temp.t('Nhắc cá nhân đúng nội dung cho người thiếu báo công (An)',
-  pg_temp.sent('700100100') = '⏰ An ơi, bạn chưa báo công ngày Thứ Sáu 16/10/2026 (tăng ca / nghỉ / về sớm). Nếu hôm đó đi làm bình thường, không tăng ca thì bỏ qua tin này.',
+  pg_temp.sent('700100100') = '⏰ An ơi, bạn chưa báo công ngày Thứ Sáu 16/10/2026. Đi làm bình thường cũng cần vào trang chấm công bấm báo công (đi làm đủ / tăng ca / nghỉ / về sớm), nếu không ngày đó sẽ không được tính công.',
   pg_temp.sent('700100100'));
 select pg_temp.t('Không nhắc: người tắt nhận thông báo cá nhân, người đã báo, người không chấm công, admin',
   pg_temp.sent('7002') = '' and pg_temp.sent('7003') = '' and pg_temp.sent('7004') = '' and pg_temp.sent('9001') not like '%ơi, bạn chưa báo%');
@@ -400,7 +400,17 @@ select pg_temp.t('telegram_check: 1 tin lỗi chat not found thì báo CHAT_ID s
 delete from net.calls;
 select ot.telegram_test('2026-10-16');
 select pg_temp.t('telegram_test gửi báo cáo [Gửi thử] cho cả 3 người nhận',
-  pg_temp.nsend() = 3 and pg_temp.sent('9001') like E'[Gửi thử]\n⏰ Nhắc chấm công tăng ca – Thứ Sáu 16/10/2026%' and pg_temp.sent('9002') <> '' and pg_temp.sent('-1001') <> '');
+  pg_temp.nsend() = 3 and pg_temp.sent('9001') like E'[Gửi thử]\n⏰ Nhắc báo công – Thứ Sáu 16/10/2026%' and pg_temp.sent('9002') <> '' and pg_temp.sent('-1001') <> '');
+select pg_temp.t('Báo cáo không còn câu "đi làm bình thường thì bỏ qua"', pg_temp.sent('9001') not like '%bỏ qua%', pg_temp.sent('9001'));
+
+-- An báo "đi làm đủ" (dòng day_status rỗng): coi như đã báo công, không còn trong danh sách
+insert into ot.day_status (employee_id, work_date, leave, early_hours)
+select id, date '2026-10-16', '', 0 from ot.employees where name = 'An';
+delete from net.calls;
+select ot.telegram_test('2026-10-16');
+select pg_temp.t('Đi làm đủ (không tăng ca) = đã báo công: chỉ còn Bình chưa báo',
+  pg_temp.sent('9001') like E'%Có 1/3 công nhân chưa báo công:\n1. Bình%' and pg_temp.sent('9001') not like '%An%', pg_temp.sent('9001'));
+delete from ot.day_status where work_date = date '2026-10-16' and employee_id = (select id from ot.employees where name = 'An');
 
 -- Ngày nghỉ: không gửi gì (cả báo cáo lẫn nhắc cá nhân)
 delete from net.calls;

@@ -52,7 +52,7 @@ Mọi người (kể cả Quản đốc) dùng **tài khoản riêng** trong *Nh
 
 Bot chạy ngay trong Supabase, không cần máy nào bật.
 
-- **Báo cáo quản lý** lúc 14:00 hằng ngày: gửi cho mọi Admin bật *Nhận báo cáo quản lý* và đã kết nối Telegram (cộng nhóm dùng chung nếu có cài chat id) danh sách người có chấm công mà **ngày hôm trước chưa báo gì** (không có ca tăng ca, không báo nghỉ / về sớm). Người hôm đó không tăng ca thật cũng có tên, Quản đốc tự bỏ qua. Hôm trước là Chủ nhật hoặc ngày lễ (trong *Lịch nghỉ lễ*) thì không gửi. Cuối tin có dòng "Còn N thay đổi sau chốt chưa duyệt" khi có.
+- **Báo cáo quản lý** lúc 14:00 hằng ngày: gửi cho mọi Admin bật *Nhận báo cáo quản lý* và đã kết nối Telegram (cộng nhóm dùng chung nếu có cài chat id) danh sách người có chấm công mà **ngày hôm trước chưa báo công** (không báo đi làm đủ, không có ca tăng ca, không báo nghỉ / về sớm). Từ 23/10/2026 ngày thường nào cũng phải báo công, kể cả đi làm bình thường không tăng ca; chưa báo thì bảng công để trống, không tính công. Hôm trước là Chủ nhật hoặc ngày lễ (trong *Lịch nghỉ lễ*) thì không gửi. Cuối tin có dòng "Còn N thay đổi sau chốt chưa duyệt" khi có.
 - **Nhắc cá nhân**: người thiếu báo công, bật *Nhận thông báo cá nhân* và đã kết nối Telegram nhận tin riêng. Cũng nhận tin khi Quản đốc duyệt thay đổi sau chốt của mình.
 - **Sửa sau chốt**: có người sửa sau khi chốt công thì Quản đốc nhận tin ngay ("trước → sau").
 

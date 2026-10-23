@@ -103,7 +103,8 @@ create table if not exists ot.mod_alerts (
   updated_at timestamptz not null default now()
 );
 
--- Nghỉ (P) / về sớm theo ngày: mỗi người mỗi ngày tối đa 1 dòng, tách riêng khỏi ca tăng ca
+-- Báo công theo ngày: nghỉ (P) / về sớm, hoặc leave '' + 0 giờ = đi làm đủ. Mỗi người mỗi ngày tối đa 1 dòng, tách riêng khỏi ca tăng ca.
+-- Ngày thường không có dòng này và không có ca nào = chưa báo công.
 create table if not exists ot.day_status (
   employee_id bigint not null references ot.employees (id) on delete restrict,
   work_date date not null,
@@ -1147,13 +1148,11 @@ begin
     if v_leave = 'FULL' then
       v_early := 0;
     end if;
-    if v_leave = '' and v_early = 0 then
-      delete from ot.day_status where employee_id = emp.id and work_date = v_wd;
-    else
-      insert into ot.day_status (employee_id, work_date, leave, early_hours) values (emp.id, v_wd, v_leave, v_early)
-      on conflict (employee_id, work_date) do update
-        set leave = excluded.leave, early_hours = excluded.early_hours, updated_at = now();
-    end if;
+    -- leave rỗng + 0 giờ = báo "đi làm đủ": vẫn lưu 1 dòng để biết người đó đã báo công ngày này
+    -- (muốn bỏ hẳn báo công của ngày thì dùng statusDelete)
+    insert into ot.day_status (employee_id, work_date, leave, early_hours) values (emp.id, v_wd, v_leave, v_early)
+    on conflict (employee_id, work_date) do update
+      set leave = excluded.leave, early_hours = excluded.early_hours, updated_at = now();
     v_bump := v_bump || emp.id;
   end loop;
   for v_key in select jsonb_array_elements_text(ot.arr(p_ops, 'statusDelete')) loop
